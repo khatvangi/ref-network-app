@@ -1,0 +1,951 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RefNet - Citation Network Explorer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape-cola/2.5.1/cytoscape-cola.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0a0a0f;
+            color: #e0e0e0;
+        }
+
+        #app {
+            display: flex;
+            height: 100vh;
+        }
+
+        /* left panel - controls */
+        #left-panel {
+            width: 320px;
+            background: #12121a;
+            border-right: 1px solid #2a2a3a;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        #header {
+            padding: 20px;
+            border-bottom: 1px solid #2a2a3a;
+        }
+
+        #header h1 {
+            font-size: 20px;
+            color: #4ecdc4;
+            margin-bottom: 5px;
+        }
+
+        #header .subtitle {
+            font-size: 12px;
+            color: #888;
+        }
+
+        /* tabs */
+        .tabs {
+            display: flex;
+            border-bottom: 1px solid #2a2a3a;
+        }
+
+        .tab {
+            flex: 1;
+            padding: 12px;
+            text-align: center;
+            cursor: pointer;
+            font-size: 12px;
+            text-transform: uppercase;
+            color: #888;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+        }
+
+        .tab:hover { color: #ccc; }
+        .tab.active {
+            color: #4ecdc4;
+            border-bottom-color: #4ecdc4;
+        }
+
+        /* panel content */
+        .panel-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 15px;
+        }
+
+        /* stats */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .stat-box {
+            background: #1a1a2e;
+            padding: 12px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #4ecdc4;
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: #888;
+            margin-top: 4px;
+        }
+
+        /* controls */
+        .control-section {
+            margin-bottom: 20px;
+        }
+
+        .control-section h3 {
+            font-size: 12px;
+            text-transform: uppercase;
+            color: #888;
+            margin-bottom: 10px;
+        }
+
+        .toggle-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .toggle {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px;
+            background: #1a1a2e;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        .toggle:hover { background: #222238; }
+
+        .toggle-label {
+            font-size: 13px;
+        }
+
+        .toggle-switch {
+            width: 36px;
+            height: 20px;
+            background: #333;
+            border-radius: 10px;
+            position: relative;
+            transition: background 0.2s;
+        }
+
+        .toggle-switch::after {
+            content: '';
+            position: absolute;
+            width: 16px;
+            height: 16px;
+            background: white;
+            border-radius: 50%;
+            top: 2px;
+            left: 2px;
+            transition: left 0.2s;
+        }
+
+        .toggle.active .toggle-switch {
+            background: #4ecdc4;
+        }
+
+        .toggle.active .toggle-switch::after {
+            left: 18px;
+        }
+
+        .btn {
+            background: #4ecdc4;
+            color: #0a0a0f;
+            border: none;
+            padding: 10px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            width: 100%;
+            margin-top: 10px;
+        }
+
+        .btn:hover { background: #3dbdb5; }
+        .btn.secondary {
+            background: #2a2a3a;
+            color: #e0e0e0;
+        }
+
+        /* graph container */
+        #graph-container {
+            flex: 1;
+            position: relative;
+        }
+
+        #cy {
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(135deg, #0a0a0f 0%, #12121a 100%);
+        }
+
+        /* right panel - details */
+        #right-panel {
+            width: 350px;
+            background: #12121a;
+            border-left: 1px solid #2a2a3a;
+            display: flex;
+            flex-direction: column;
+        }
+
+        #detail-header {
+            padding: 20px;
+            border-bottom: 1px solid #2a2a3a;
+        }
+
+        #detail-header h2 {
+            font-size: 16px;
+            color: #4ecdc4;
+        }
+
+        #detail-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 15px;
+        }
+
+        .detail-section {
+            margin-bottom: 20px;
+        }
+
+        .detail-section h4 {
+            font-size: 11px;
+            text-transform: uppercase;
+            color: #888;
+            margin-bottom: 8px;
+        }
+
+        .detail-text {
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .detail-link {
+            color: #4ecdc4;
+            text-decoration: none;
+        }
+
+        .detail-link:hover { text-decoration: underline; }
+
+        /* author card */
+        .author-card {
+            background: #1a1a2e;
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+        }
+
+        .author-name {
+            font-weight: 500;
+            margin-bottom: 5px;
+        }
+
+        .author-meta {
+            font-size: 12px;
+            color: #888;
+        }
+
+        /* trajectory timeline */
+        .trajectory-timeline {
+            position: relative;
+            padding-left: 20px;
+        }
+
+        .trajectory-timeline::before {
+            content: '';
+            position: absolute;
+            left: 6px;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: #2a2a3a;
+        }
+
+        .drift-event {
+            position: relative;
+            padding: 10px;
+            background: #1a1a2e;
+            border-radius: 6px;
+            margin-bottom: 12px;
+        }
+
+        .drift-event::before {
+            content: '';
+            position: absolute;
+            left: -17px;
+            top: 14px;
+            width: 10px;
+            height: 10px;
+            background: #4ecdc4;
+            border-radius: 50%;
+        }
+
+        .drift-event.novelty-jump::before {
+            background: #ff6b6b;
+        }
+
+        .drift-years {
+            font-weight: 500;
+            margin-bottom: 5px;
+        }
+
+        .drift-magnitude {
+            font-size: 12px;
+            color: #888;
+            margin-bottom: 8px;
+        }
+
+        .concept-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+        }
+
+        .concept-tag {
+            font-size: 11px;
+            padding: 3px 8px;
+            border-radius: 3px;
+            background: #2a2a3a;
+        }
+
+        .concept-tag.entering { background: #1e3a2f; color: #4ecdc4; }
+        .concept-tag.exiting { background: #3a1e1e; color: #ff6b6b; }
+
+        /* gap analysis */
+        .gap-item {
+            background: #1a1a2e;
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 10px;
+            cursor: pointer;
+        }
+
+        .gap-item:hover { background: #222238; }
+
+        .gap-title {
+            font-weight: 500;
+            margin-bottom: 5px;
+        }
+
+        .gap-meta {
+            font-size: 12px;
+            color: #888;
+        }
+
+        /* legend */
+        .legend {
+            padding: 15px;
+            border-top: 1px solid #2a2a3a;
+        }
+
+        .legend-title {
+            font-size: 11px;
+            text-transform: uppercase;
+            color: #888;
+            margin-bottom: 10px;
+        }
+
+        .legend-items {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            font-size: 12px;
+        }
+
+        .legend-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 6px;
+        }
+
+        /* loading */
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid #2a2a3a;
+            border-top-color: #4ecdc4;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* hidden panels */
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <!-- left panel -->
+        <div id="left-panel">
+            <div id="header">
+                <h1>RefNet Explorer</h1>
+                <div class="subtitle">Scientist-Centric Citation Networks</div>
+            </div>
+
+            <div class="tabs">
+                <div class="tab active" data-tab="overview">Overview</div>
+                <div class="tab" data-tab="layers">Layers</div>
+                <div class="tab" data-tab="gaps">Gaps</div>
+            </div>
+
+            <div class="panel-content" id="overview-panel">
+                <div class="stats-grid">
+                    <div class="stat-box">
+                        <div class="stat-value" id="stat-papers">-</div>
+                        <div class="stat-label">Papers</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value" id="stat-authors">-</div>
+                        <div class="stat-label">Authors</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value" id="stat-edges">-</div>
+                        <div class="stat-label">Citations</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value" id="stat-clusters">-</div>
+                        <div class="stat-label">Clusters</div>
+                    </div>
+                </div>
+
+                <div class="control-section">
+                    <h3>View Controls</h3>
+                    <button class="btn" onclick="resetView()">Reset View</button>
+                    <button class="btn secondary" onclick="runLayout()">Re-Layout</button>
+                </div>
+            </div>
+
+            <div class="panel-content hidden" id="layers-panel">
+                <div class="control-section">
+                    <h3>Node Layers</h3>
+                    <div class="toggle-group">
+                        <div class="toggle active" data-layer="papers" onclick="toggleLayer('papers')">
+                            <span class="toggle-label">📄 Papers</span>
+                            <div class="toggle-switch"></div>
+                        </div>
+                        <div class="toggle active" data-layer="authors" onclick="toggleLayer('authors')">
+                            <span class="toggle-label">👤 Authors</span>
+                            <div class="toggle-switch"></div>
+                        </div>
+                        <div class="toggle" data-layer="trajectories" onclick="toggleLayer('trajectories')">
+                            <span class="toggle-label">📈 Trajectories</span>
+                            <div class="toggle-switch"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="control-section">
+                    <h3>Edge Types</h3>
+                    <div class="toggle-group">
+                        <div class="toggle active" data-edge="cites" onclick="toggleEdge('cites')">
+                            <span class="toggle-label">→ Citations</span>
+                            <div class="toggle-switch"></div>
+                        </div>
+                        <div class="toggle active" data-edge="intro_hint_cites" onclick="toggleEdge('intro_hint_cites')">
+                            <span class="toggle-label">→ Intro Hints</span>
+                            <div class="toggle-switch"></div>
+                        </div>
+                        <div class="toggle active" data-edge="authored" onclick="toggleEdge('authored')">
+                            <span class="toggle-label">✍ Authored</span>
+                            <div class="toggle-switch"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="control-section">
+                    <h3>Highlight</h3>
+                    <div class="toggle-group">
+                        <div class="toggle" onclick="highlightSeeds()">
+                            <span class="toggle-label">🌱 Seed Papers</span>
+                            <div class="toggle-switch"></div>
+                        </div>
+                        <div class="toggle" onclick="highlightTrajectoryAuthors()">
+                            <span class="toggle-label">📈 Authors with Trajectories</span>
+                            <div class="toggle-switch"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel-content hidden" id="gaps-panel">
+                <div class="control-section">
+                    <h3>Unexplored Areas</h3>
+                    <div id="unexplored-list"></div>
+                </div>
+
+                <div class="control-section">
+                    <h3>Bridge Papers</h3>
+                    <div id="bridges-list"></div>
+                </div>
+
+                <div class="control-section">
+                    <h3>Missing Links</h3>
+                    <div id="missing-links-list"></div>
+                </div>
+            </div>
+
+            <div class="legend">
+                <div class="legend-title">Legend</div>
+                <div class="legend-items">
+                    <div class="legend-item"><div class="legend-dot" style="background:#4ecdc4"></div>Seed</div>
+                    <div class="legend-item"><div class="legend-dot" style="background:#6c5ce7"></div>Paper</div>
+                    <div class="legend-item"><div class="legend-dot" style="background:#fd79a8"></div>Author</div>
+                    <div class="legend-item"><div class="legend-dot" style="background:#ff6b6b"></div>Review</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- graph container -->
+        <div id="graph-container">
+            <div id="loading">
+                <div class="spinner"></div>
+                <div>Loading network...</div>
+            </div>
+            <div id="cy"></div>
+        </div>
+
+        <!-- right panel - details -->
+        <div id="right-panel">
+            <div id="detail-header">
+                <h2>Details</h2>
+            </div>
+            <div id="detail-content">
+                <p style="color:#888;font-size:13px;">Click a node to see details</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // global state
+        let cy = null;
+        let graphData = null;
+        let layers = { papers: true, authors: true, trajectories: false };
+        let edgeTypes = { cites: true, intro_hint_cites: true, authored: true };
+
+        // load graph data
+        async function loadGraph() {
+            try {
+                const resp = await fetch('graph.json');
+                graphData = await resp.json();
+                initGraph();
+            } catch (e) {
+                document.getElementById('loading').innerHTML = `
+                    <div style="color:#ff6b6b">Error loading graph</div>
+                    <div style="font-size:12px;color:#888;margin-top:10px">${e.message}</div>
+                `;
+            }
+        }
+
+        function initGraph() {
+            document.getElementById('loading').style.display = 'none';
+
+            // update stats
+            document.getElementById('stat-papers').textContent = graphData.nodes.length;
+            document.getElementById('stat-authors').textContent = graphData.authors?.length || 0;
+            document.getElementById('stat-edges').textContent = graphData.edges.length;
+            document.getElementById('stat-clusters').textContent = graphData.clusters?.length || 0;
+
+            // build cytoscape elements
+            const elements = [];
+
+            // add paper nodes
+            graphData.nodes.forEach(n => {
+                elements.push({
+                    data: {
+                        id: n.id,
+                        label: n.title?.substring(0, 40) + '...',
+                        fullTitle: n.title,
+                        type: 'paper',
+                        year: n.year,
+                        venue: n.venue,
+                        citations: n.citation_count,
+                        doi: n.doi,
+                        authors: n.authors,
+                        isSeed: n.is_seed,
+                        isReview: n.is_review,
+                        cluster: n.cluster,
+                        relevance: n.relevance_score
+                    },
+                    classes: [
+                        'paper',
+                        n.is_seed ? 'seed' : '',
+                        n.is_review ? 'review' : ''
+                    ].filter(Boolean).join(' ')
+                });
+            });
+
+            // add author nodes
+            (graphData.authors || []).forEach(a => {
+                elements.push({
+                    data: {
+                        id: a.id,
+                        label: a.name || 'Unknown',
+                        type: 'author',
+                        name: a.name,
+                        orcid: a.orcid,
+                        affiliations: a.affiliations,
+                        paperCount: a.paper_count,
+                        hasTrajectory: a.trajectory_computed
+                    },
+                    classes: ['author', a.trajectory_computed ? 'has-trajectory' : ''].filter(Boolean).join(' ')
+                });
+            });
+
+            // add citation edges
+            graphData.edges.forEach((e, i) => {
+                elements.push({
+                    data: {
+                        id: 'e' + i,
+                        source: e.source,
+                        target: e.target,
+                        type: e.type
+                    },
+                    classes: e.type
+                });
+            });
+
+            // add author-paper edges
+            graphData.nodes.forEach(n => {
+                if (n.authors) {
+                    // find matching authors
+                    (graphData.authors || []).forEach(a => {
+                        if (n.authors.includes(a.name)) {
+                            elements.push({
+                                data: {
+                                    id: 'auth_' + a.id + '_' + n.id,
+                                    source: a.id,
+                                    target: n.id,
+                                    type: 'authored'
+                                },
+                                classes: 'authored'
+                            });
+                        }
+                    });
+                }
+            });
+
+            // init cytoscape
+            cy = cytoscape({
+                container: document.getElementById('cy'),
+                elements: elements,
+                style: [
+                    // paper nodes
+                    {
+                        selector: 'node.paper',
+                        style: {
+                            'background-color': '#6c5ce7',
+                            'label': 'data(label)',
+                            'font-size': '10px',
+                            'color': '#fff',
+                            'text-valign': 'bottom',
+                            'text-margin-y': '5px',
+                            'width': 'mapData(citations, 0, 1000, 20, 60)',
+                            'height': 'mapData(citations, 0, 1000, 20, 60)'
+                        }
+                    },
+                    {
+                        selector: 'node.seed',
+                        style: {
+                            'background-color': '#4ecdc4',
+                            'border-width': 3,
+                            'border-color': '#fff'
+                        }
+                    },
+                    {
+                        selector: 'node.review',
+                        style: {
+                            'background-color': '#ff6b6b',
+                            'shape': 'diamond'
+                        }
+                    },
+                    // author nodes
+                    {
+                        selector: 'node.author',
+                        style: {
+                            'background-color': '#fd79a8',
+                            'shape': 'ellipse',
+                            'label': 'data(label)',
+                            'font-size': '10px',
+                            'color': '#fff',
+                            'width': 'mapData(paperCount, 1, 10, 15, 40)',
+                            'height': 'mapData(paperCount, 1, 10, 15, 40)'
+                        }
+                    },
+                    {
+                        selector: 'node.has-trajectory',
+                        style: {
+                            'border-width': 3,
+                            'border-color': '#ffeaa7'
+                        }
+                    },
+                    // edges
+                    {
+                        selector: 'edge.cites',
+                        style: {
+                            'width': 1,
+                            'line-color': '#444',
+                            'target-arrow-color': '#444',
+                            'target-arrow-shape': 'triangle',
+                            'curve-style': 'bezier'
+                        }
+                    },
+                    {
+                        selector: 'edge.intro_hint_cites',
+                        style: {
+                            'width': 2,
+                            'line-color': '#4ecdc4',
+                            'target-arrow-color': '#4ecdc4',
+                            'line-style': 'dashed'
+                        }
+                    },
+                    {
+                        selector: 'edge.authored',
+                        style: {
+                            'width': 1,
+                            'line-color': '#fd79a8',
+                            'line-style': 'dotted',
+                            'target-arrow-shape': 'none'
+                        }
+                    },
+                    // selected
+                    {
+                        selector: ':selected',
+                        style: {
+                            'background-color': '#ffeaa7',
+                            'border-width': 4,
+                            'border-color': '#fff'
+                        }
+                    },
+                    // hidden
+                    {
+                        selector: '.hidden',
+                        style: { 'display': 'none' }
+                    }
+                ],
+                layout: { name: 'cola', nodeSpacing: 50, animate: false }
+            });
+
+            // click handlers
+            cy.on('tap', 'node', function(evt) {
+                showNodeDetails(evt.target.data());
+            });
+
+            // populate gap analysis
+            populateGapAnalysis();
+        }
+
+        function showNodeDetails(data) {
+            const content = document.getElementById('detail-content');
+
+            if (data.type === 'paper') {
+                content.innerHTML = `
+                    <div class="detail-section">
+                        <h4>Title</h4>
+                        <div class="detail-text">${data.fullTitle || data.label}</div>
+                    </div>
+                    <div class="detail-section">
+                        <h4>Year / Venue</h4>
+                        <div class="detail-text">${data.year || 'Unknown'} · ${data.venue || 'Unknown'}</div>
+                    </div>
+                    <div class="detail-section">
+                        <h4>Citations</h4>
+                        <div class="detail-text">${data.citations || 0}</div>
+                    </div>
+                    ${data.doi ? `
+                    <div class="detail-section">
+                        <h4>DOI</h4>
+                        <div class="detail-text">
+                            <a class="detail-link" href="https://doi.org/${data.doi}" target="_blank">${data.doi}</a>
+                        </div>
+                    </div>` : ''}
+                    <div class="detail-section">
+                        <h4>Authors</h4>
+                        <div class="detail-text">${(data.authors || []).join(', ') || 'Unknown'}</div>
+                    </div>
+                    ${data.isSeed ? '<div class="detail-section"><span style="color:#4ecdc4">🌱 Seed Paper</span></div>' : ''}
+                `;
+            } else if (data.type === 'author') {
+                // find trajectory for this author
+                const traj = (graphData.trajectories || []).find(t => t.author_id === data.id);
+
+                let trajHtml = '';
+                if (traj && traj.drift_events.length > 0) {
+                    trajHtml = `
+                        <div class="detail-section">
+                            <h4>Research Trajectory</h4>
+                            <div class="trajectory-timeline">
+                                ${traj.drift_events.map(e => `
+                                    <div class="drift-event ${e.is_novelty_jump ? 'novelty-jump' : ''}">
+                                        <div class="drift-years">${e.year_from} → ${e.year_to}</div>
+                                        <div class="drift-magnitude">
+                                            Drift: ${(e.drift_magnitude * 100).toFixed(0)}%
+                                            ${e.is_novelty_jump ? ' 🔥 Novelty Jump' : ''}
+                                        </div>
+                                        <div class="concept-tags">
+                                            ${(e.entering_concepts || []).map(c => `<span class="concept-tag entering">+ ${c}</span>`).join('')}
+                                            ${(e.exiting_concepts || []).map(c => `<span class="concept-tag exiting">- ${c}</span>`).join('')}
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    `;
+                }
+
+                content.innerHTML = `
+                    <div class="detail-section">
+                        <h4>Author</h4>
+                        <div class="detail-text">${data.name}</div>
+                    </div>
+                    ${data.orcid ? `
+                    <div class="detail-section">
+                        <h4>ORCID</h4>
+                        <div class="detail-text">
+                            <a class="detail-link" href="https://orcid.org/${data.orcid}" target="_blank">${data.orcid}</a>
+                        </div>
+                    </div>` : ''}
+                    <div class="detail-section">
+                        <h4>Papers in Network</h4>
+                        <div class="detail-text">${data.paperCount || 0}</div>
+                    </div>
+                    ${data.affiliations?.length ? `
+                    <div class="detail-section">
+                        <h4>Affiliations</h4>
+                        <div class="detail-text">${data.affiliations.join(', ')}</div>
+                    </div>` : ''}
+                    ${trajHtml}
+                `;
+            }
+        }
+
+        function populateGapAnalysis() {
+            const gap = graphData.gap_analysis;
+            if (!gap) return;
+
+            // unexplored areas
+            const unexploredList = document.getElementById('unexplored-list');
+            unexploredList.innerHTML = (gap.unexplored || []).map(u => `
+                <div class="gap-item">
+                    <div class="gap-title">${u.name}</div>
+                    <div class="gap-meta">${u.count} papers in pool</div>
+                </div>
+            `).join('') || '<p style="color:#888;font-size:12px">No unexplored areas</p>';
+
+            // bridges
+            const bridgesList = document.getElementById('bridges-list');
+            bridgesList.innerHTML = (gap.bridges || []).map(b => `
+                <div class="gap-item" onclick="focusNode('${b.paper_id}')">
+                    <div class="gap-title">${b.paper_title?.substring(0, 50)}...</div>
+                    <div class="gap-meta">Score: ${b.score?.toFixed(2)}</div>
+                </div>
+            `).join('') || '<p style="color:#888;font-size:12px">No bridge papers</p>';
+
+            // missing links
+            const missingList = document.getElementById('missing-links-list');
+            missingList.innerHTML = (gap.missing_links || []).map(m => `
+                <div class="gap-item">
+                    <div class="gap-title">${m.type}</div>
+                    <div class="gap-meta">${m.explanation}</div>
+                </div>
+            `).join('') || '<p style="color:#888;font-size:12px">No missing links identified</p>';
+        }
+
+        // UI functions
+        function toggleLayer(layer) {
+            layers[layer] = !layers[layer];
+            const toggle = document.querySelector(`.toggle[data-layer="${layer}"]`);
+            toggle.classList.toggle('active');
+
+            if (layer === 'papers') {
+                cy.nodes('.paper').toggleClass('hidden', !layers.papers);
+            } else if (layer === 'authors') {
+                cy.nodes('.author').toggleClass('hidden', !layers.authors);
+                cy.edges('.authored').toggleClass('hidden', !layers.authors);
+            }
+        }
+
+        function toggleEdge(type) {
+            edgeTypes[type] = !edgeTypes[type];
+            const toggle = document.querySelector(`.toggle[data-edge="${type}"]`);
+            toggle.classList.toggle('active');
+            cy.edges('.' + type).toggleClass('hidden', !edgeTypes[type]);
+        }
+
+        function resetView() {
+            cy.fit();
+        }
+
+        function runLayout() {
+            cy.layout({ name: 'cola', nodeSpacing: 50, animate: true }).run();
+        }
+
+        function highlightSeeds() {
+            cy.nodes().removeClass('highlighted');
+            cy.nodes('.seed').addClass('highlighted');
+        }
+
+        function highlightTrajectoryAuthors() {
+            cy.nodes().removeClass('highlighted');
+            cy.nodes('.has-trajectory').addClass('highlighted');
+        }
+
+        function focusNode(id) {
+            const node = cy.getElementById(id);
+            if (node.length) {
+                cy.animate({ center: { eles: node }, zoom: 2 });
+                node.select();
+            }
+        }
+
+        // tab switching
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+
+                document.querySelectorAll('.panel-content').forEach(p => p.classList.add('hidden'));
+                document.getElementById(tab.dataset.tab + '-panel').classList.remove('hidden');
+            });
+        });
+
+        // init
+        loadGraph();
+    </script>
+</body>
+</html>
