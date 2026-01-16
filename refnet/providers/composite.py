@@ -207,10 +207,22 @@ class CompositeProvider(PaperProvider):
 
 def create_default_provider(
     email: str = "user@example.com",
-    s2_api_key: Optional[str] = None
+    s2_api_key: Optional[str] = None,
+    use_google_scholar: bool = False,
+    serpapi_key: Optional[str] = None,
+    searxng_url: Optional[str] = None,
+    gs_rate_limit: float = 5.0
 ) -> CompositeProvider:
     """
     create default composite provider with OpenAlex primary, S2 fallback.
+
+    args:
+        email: email for OpenAlex polite pool
+        s2_api_key: optional Semantic Scholar API key
+        use_google_scholar: include Google Scholar as tertiary fallback
+        serpapi_key: SerpAPI key for reliable Google Scholar access
+        searxng_url: self-hosted SearXNG URL for Google Scholar
+        gs_rate_limit: delay between Google Scholar requests (default 5s)
     """
     from .openalex import OpenAlexProvider
     from .semantic_scholar import SemanticScholarProvider
@@ -219,5 +231,17 @@ def create_default_provider(
         OpenAlexProvider(email=email),
         SemanticScholarProvider(api_key=s2_api_key)
     ]
+
+    # add google scholar as tertiary fallback if requested
+    if use_google_scholar:
+        from .google_scholar import GoogleScholarProvider
+        providers.append(
+            GoogleScholarProvider(
+                serpapi_key=serpapi_key,
+                searxng_url=searxng_url,
+                rate_limit_delay=gs_rate_limit
+            )
+        )
+        logger.info("google scholar added as tertiary provider")
 
     return CompositeProvider(providers)

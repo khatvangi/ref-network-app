@@ -7,11 +7,13 @@ import os
 import sqlite3
 import json
 import logging
+import math
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Set, Tuple
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from enum import Enum
+from collections import defaultdict
 
 from ..core.models import Paper, Author, EdgeType, PaperStatus, AuthorStatus
 
@@ -302,12 +304,12 @@ class Garden:
         """, (
             author.id,
             author.name,
-            author.orcid,
-            author.openalex_id,
-            author.s2_id,
-            json.dumps(author.affiliations) if author.affiliations else None,
-            author.paper_count,
-            author.citation_count,
+            getattr(author, 'orcid', None),
+            getattr(author, 'openalex_id', None),
+            getattr(author, 's2_id', None),
+            json.dumps(author.affiliations) if getattr(author, 'affiliations', None) else None,
+            getattr(author, 'paper_count', 0),
+            getattr(author, 'citation_count', 0),
             1 if is_seed else 0,
             now if is_seed else None
         ))
@@ -431,6 +433,262 @@ class Garden:
         conn.close()
 
         logger.info("[garden] computed author roles")
+
+    def compute_trajectories(self, provider=None, min_papers_per_author: int = 5):
+        """
+        compute trajectories for all authors with sufficient papers.
+        this is the CRITICAL method that populates drift data for role classification.
+
+        steps:
+        1. get all authors and their papers
+        2. group papers by year per author
+        3. compute concept distributions per year
+        4. compute JSD drift between consecutive years
+        5. store trajectory events
+        6. update author drift metrics
+        """
+        conn = sqlite3.connect(str(self.db_path))
+        c = conn.cursor()
+
+        # get all authors
+        c.execute("SELECT id, name, openalex_id, s2_id FROM authors")
+        authors = c.fetchall()
+
+        if not authors:
+            conn.close()
+            logger.info("[garden] no authors to compute trajectories for")
+            return
+
+        logger.info(f"[garden] computing trajectories for {len(authors)} authors")
+
+        for author_row in authors:
+            author_id, author_name, oa_id, s2_id = author_row
+
+            # get papers for this author
+            # match by author_ids_json containing the author's external id
+            papers = []
+
+            c.execute("""
+                SELECT id, title, year, concepts_json, citation_count
+                FROM papers
+                WHERE year IS NOT NULL
+            """)
+
+            all_papers = c.fetchall()
+
+            # filter papers by author (check author_ids_json)
+            for paper_row in all_papers:
+                pid, title, year, concepts_json, cites = paper_row
+
+                # check if this author wrote this paper
+                c.execute("SELECT author_ids_json FROM papers WHERE id = ?", (pid,))
+                aids_row = c.fetchone()
+                if aids_row and aids_row[0]:
+                    try:
+                        author_ids = json.loads(aids_row[0])
+                        # match by any known id
+                        if oa_id and oa_id in author_ids:
+                            papers.append((year, concepts_json or "[]"))
+                        elif s2_id and s2_id in author_ids:
+                            papers.append((year, concepts_json or "[]"))
+                        elif author_id in author_ids:
+                            papers.append((year, concepts_json or "[]"))
+                    except:
+                        pass
+
+            if len(papers) < min_papers_per_author:
+                continue
+
+            # group by year
+            year_concepts: Dict[int, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
+            year_counts: Dict[int, int] = defaultdict(int)
+
+            for year, concepts_json in papers:
+                if not year:
+                    continue
+                year_counts[year] += 1
+                try:
+                    concepts = json.loads(concepts_json)
+                    for concept in concepts[:10]:
+                        name = concept.get('name', '') if isinstance(concept, dict) else str(concept)
+                        score = concept.get('score', 1.0) if isinstance(concept, dict) else 1.0
+                        if name:
+                            year_concepts[year][name] += score
+                except:
+                    pass
+
+            if len(year_concepts) < 2:
+                continue
+
+            # normalize distributions
+            year_distributions: Dict[int, Dict[str, float]] = {}
+            for year, concepts in year_concepts.items():
+                total = sum(concepts.values())
+                if total > 0:
+                    year_distributions[year] = {k: v/total for k, v in concepts.items()}
+
+            # compute drift between consecutive years
+            sorted_years = sorted(year_distributions.keys())
+            drift_events = []
+            total_drift = 0.0
+            novelty_jumps = 0
+
+            for i in range(len(sorted_years) - 1):
+                y1, y2 = sorted_years[i], sorted_years[i+1]
+
+                # skip large gaps
+                if y2 - y1 > 3:
+                    continue
+
+                dist1 = year_distributions[y1]
+                dist2 = year_distributions[y2]
+
+                # compute JSD
+                drift = self._compute_jsd(dist1, dist2)
+                total_drift += drift
+
+                is_jump = drift >= 0.55  # novelty jump threshold
+                if is_jump:
+                    novelty_jumps += 1
+
+                # get entering/exiting concepts
+                entering = []
+                exiting = []
+                for c, w2 in dist2.items():
+                    w1 = dist1.get(c, 0.0)
+                    if w2 > w1 + 0.1:
+                        entering.append(c)
+                for c, w1 in dist1.items():
+                    w2 = dist2.get(c, 0.0)
+                    if w1 > w2 + 0.1:
+                        exiting.append(c)
+
+                if drift > 0.2:
+                    drift_events.append({
+                        'year': y2,
+                        'drift': drift,
+                        'is_jump': is_jump,
+                        'from_focus': ', '.join(exiting[:3]),
+                        'to_focus': ', '.join(entering[:3])
+                    })
+
+                    # store trajectory event
+                    self.add_trajectory_event(
+                        author_id=author_id,
+                        year=y2,
+                        drift_magnitude=drift,
+                        is_novelty_jump=is_jump,
+                        from_focus=', '.join(exiting[:3]),
+                        to_focus=', '.join(entering[:3])
+                    )
+
+            # compute average drift
+            num_transitions = len(sorted_years) - 1
+            avg_drift = total_drift / num_transitions if num_transitions > 0 else 0.0
+
+            # update author with drift metrics
+            c.execute("""
+                UPDATE authors SET
+                    drift_magnitude_avg = ?,
+                    novelty_jumps = ?,
+                    trajectory_start_year = ?,
+                    trajectory_end_year = ?
+                WHERE id = ?
+            """, (
+                avg_drift,
+                novelty_jumps,
+                sorted_years[0] if sorted_years else None,
+                sorted_years[-1] if sorted_years else None,
+                author_id
+            ))
+
+            if drift_events:
+                logger.debug(f"[garden] {author_name}: avg_drift={avg_drift:.2f}, jumps={novelty_jumps}")
+
+        conn.commit()
+        conn.close()
+
+        logger.info("[garden] trajectory computation complete")
+
+    def _compute_jsd(self, dist1: Dict[str, float], dist2: Dict[str, float]) -> float:
+        """
+        compute Jensen-Shannon divergence between two distributions.
+        returns value in [0, 1].
+        """
+        if not dist1 or not dist2:
+            return 0.0
+
+        # get all concepts
+        all_concepts = set(dist1.keys()) | set(dist2.keys())
+        if not all_concepts:
+            return 0.0
+
+        # build probability arrays with smoothing
+        eps = 1e-10
+        p = []
+        q = []
+
+        for c in all_concepts:
+            p.append(dist1.get(c, 0.0) + eps)
+            q.append(dist2.get(c, 0.0) + eps)
+
+        # normalize
+        p_sum = sum(p)
+        q_sum = sum(q)
+        p = [x / p_sum for x in p]
+        q = [x / q_sum for x in q]
+
+        # compute JSD = (KL(p||m) + KL(q||m)) / 2 where m = (p+q)/2
+        m = [(p[i] + q[i]) / 2 for i in range(len(p))]
+
+        def kl_div(a, b):
+            return sum(a[i] * math.log(a[i] / b[i]) for i in range(len(a)) if a[i] > 0 and b[i] > 0)
+
+        jsd = (kl_div(p, m) + kl_div(q, m)) / 2
+
+        # normalize to [0, 1] - JSD is bounded by log(2) ≈ 0.693
+        return min(jsd / 0.693, 1.0)
+
+    def compute_cluster_bridging(self):
+        """
+        compute how many clusters each author bridges.
+        an author bridges clusters if they have papers in multiple distinct concept clusters.
+        """
+        conn = sqlite3.connect(str(self.db_path))
+        c = conn.cursor()
+
+        # get all authors
+        c.execute("SELECT id, openalex_id, s2_id FROM authors")
+        authors = c.fetchall()
+
+        for author_id, oa_id, s2_id in authors:
+            # get papers by this author
+            c.execute("SELECT concepts_json FROM papers WHERE author_ids_json LIKE ?", (f'%{oa_id or author_id}%',))
+            papers = c.fetchall()
+
+            # collect all concepts (treating top concept as cluster indicator)
+            top_concepts = set()
+            for (concepts_json,) in papers:
+                if concepts_json:
+                    try:
+                        concepts = json.loads(concepts_json)
+                        if concepts:
+                            top = concepts[0]
+                            name = top.get('name', '') if isinstance(top, dict) else str(top)
+                            if name:
+                                top_concepts.add(name)
+                    except:
+                        pass
+
+            # count distinct clusters (using top concepts as proxy)
+            clusters_bridged = max(0, len(top_concepts) - 1)  # -1 because being in 1 cluster = 0 bridges
+
+            c.execute("UPDATE authors SET clusters_bridged = ? WHERE id = ?", (clusters_bridged, author_id))
+
+        conn.commit()
+        conn.close()
+
+        logger.info("[garden] computed cluster bridging")
 
     def get_stats(self) -> GardenStats:
         """get current garden statistics."""
@@ -709,16 +967,17 @@ class Garden:
         updates = []
         values = []
 
-        if author.orcid:
+        # use getattr for safe access since Author model may not have all fields
+        if getattr(author, 'orcid', None):
             updates.append("orcid = COALESCE(orcid, ?)")
             values.append(author.orcid)
-        if author.openalex_id:
+        if getattr(author, 'openalex_id', None):
             updates.append("openalex_id = COALESCE(openalex_id, ?)")
             values.append(author.openalex_id)
-        if author.s2_id:
+        if getattr(author, 's2_id', None):
             updates.append("s2_id = COALESCE(s2_id, ?)")
             values.append(author.s2_id)
-        if author.citation_count:
+        if getattr(author, 'citation_count', 0):
             updates.append("citation_count = MAX(COALESCE(citation_count, 0), ?)")
             values.append(author.citation_count)
         if is_seed:

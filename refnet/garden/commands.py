@@ -211,8 +211,16 @@ def cmd_grow(args):
             except Exception as e:
                 logger.warning(f"author expand failed: {e}")
 
-    # compute author roles
-    print("\nComputing author roles...")
+    # compute trajectories (THIS IS THE KEY - populates drift data!)
+    print("\nComputing author trajectories...")
+    garden.compute_trajectories(min_papers_per_author=3)
+
+    # compute cluster bridging
+    print("Computing cluster bridging...")
+    garden.compute_cluster_bridging()
+
+    # compute author roles (now with real drift data!)
+    print("Computing author roles...")
     garden.compute_author_roles()
 
     garden.update_meta("last_grow", datetime.now().isoformat())

@@ -168,6 +168,8 @@ class Author:
     name: str = ""
     display_name: Optional[str] = None
     affiliations: List[str] = field(default_factory=list)
+    paper_count: int = 0
+    citation_count: int = 0
 
     # graph state
     status: AuthorStatus = AuthorStatus.CANDIDATE
