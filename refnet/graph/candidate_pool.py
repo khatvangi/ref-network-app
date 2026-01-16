@@ -150,6 +150,10 @@ class CandidatePool:
 
         return neighbors
 
+    def get_edges_from_with_weight(self, paper_id: str) -> List[tuple]:
+        """get all outgoing edges with full data (target, type, weight, confidence)."""
+        return self.db.get_edges_from(paper_id)
+
     def prune_if_needed(self):
         """prune low-scoring candidates if pool is too large."""
         total = self.db.count_papers()

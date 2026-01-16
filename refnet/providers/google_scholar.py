@@ -149,8 +149,13 @@ class GoogleScholarProvider(PaperProvider):
 
             title = bib.get('title', '')
             authors = []
-            if bib.get('author'):
-                authors = bib.get('author', '').split(' and ')
+            author_data = bib.get('author')
+            if author_data:
+                # handle both list and string formats
+                if isinstance(author_data, list):
+                    authors = author_data
+                else:
+                    authors = author_data.split(' and ')
 
             year = None
             if bib.get('pub_year'):

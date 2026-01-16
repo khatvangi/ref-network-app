@@ -278,12 +278,29 @@ class ExpansionEngine:
             return
 
         # 1. backward references (what this paper cites)
+        # INTRO_HINT_CITES heuristic: first 25% of refs (clamped 10-40, max 20) are
+        # likely from the introduction section where problem/context is defined
         if limits["max_refs"] > 0:
             try:
                 refs = self.provider.get_references(paper_id, limit=limits["max_refs"])
                 self.api_call_count += 1
 
                 if refs:
+                    # compute intro hint threshold per spec:
+                    # k = clamp(round(n * intro_fraction), 10, 40)
+                    # then cap at max_intro_hint_per_node
+                    n_refs = len(refs)
+                    intro_fraction = self.config.expansion.intro_fraction
+                    max_intro = self.config.expansion.max_intro_hint_per_node
+                    intro_weight = self.config.expansion.intro_hint_weight
+
+                    # calculate k: 25% of refs, minimum 10 (if enough refs), max 40
+                    k = int(n_refs * intro_fraction)
+                    if n_refs >= 10:
+                        k = max(k, 10)  # at least 10 if paper has 10+ refs
+                    k = min(k, 40)  # cap at 40
+                    k = min(k, max_intro)  # then cap at config limit (default 20)
+
                     for i, ref in enumerate(refs):
                         ref.discovered_from = paper.id
                         ref.discovered_channel = "backward"
@@ -292,9 +309,12 @@ class ExpansionEngine:
                         if pool.add_paper(ref):
                             stats.papers_discovered += 1
 
-                            # add edge
-                            edge_type = EdgeType.INTRO_HINT_CITES if i < self.config.expansion.max_intro_hint_per_node else EdgeType.CITES
-                            pool.add_edge(paper.id, ref.id, edge_type)
+                            # apply intro hint: first k refs get boosted weight
+                            is_intro_hint = i < k
+                            edge_type = EdgeType.INTRO_HINT_CITES if is_intro_hint else EdgeType.CITES
+                            edge_weight = intro_weight if is_intro_hint else 1.0
+
+                            pool.add_edge(paper.id, ref.id, edge_type, weight=edge_weight)
                             stats.edges_created += 1
                     paper.refs_fetched = True
             except KeyboardInterrupt:
@@ -464,28 +484,26 @@ class ExpansionEngine:
         sync all edges from pool to graph.
         catches edges that were missed during materialization,
         especially edges between seeds.
+        preserves edge weights (e.g., intro_hint_cites have weight 2.0).
         """
         edges_added = 0
 
         # for each paper in the graph, check for edges in the pool
         for paper_id in list(graph.papers.keys()):
-            neighbors = pool.get_neighbors(paper_id)
+            # get edges with full data including weight
+            edges = pool.get_edges_from_with_weight(paper_id)
 
-            for etype, targets in neighbors.items():
-                if etype.startswith("reverse_"):
-                    continue
-
+            for target, etype, weight, conf in edges:
                 try:
                     edge_type = EdgeType(etype)
                 except ValueError:
                     continue
 
-                for target in targets:
-                    if target in graph.papers:
-                        # check if edge already exists
-                        if not graph.has_edge(paper_id, target):
-                            graph.add_edge(paper_id, target, edge_type)
-                            edges_added += 1
+                if target in graph.papers:
+                    # check if edge already exists
+                    if not graph.has_edge(paper_id, target):
+                        graph.add_edge(paper_id, target, edge_type, weight=weight)
+                        edges_added += 1
 
         if edges_added > 0:
             print(f"[expansion] synced {edges_added} edges from pool to graph")

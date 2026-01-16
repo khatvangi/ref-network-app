@@ -1,20 +1,36 @@
 #!/usr/bin/env python3
 """
-refnet - citation network builder CLI.
-builds citation networks from various input sources:
-  - topic string
-  - pdf file (extracts references)
-  - bibtex/ris file (zotero export)
-  - paper title or doi
+REFNET - Universal Citation Network Builder
+============================================
 
-searches multiple databases: openalex, semantic scholar, pubmed, crossref, google scholar
+One command for any input. Auto-detects format, runs all layers.
 
-usage:
-    python refnet.py "ancestral protein reconstruction"
-    python refnet.py --pdf paper.pdf
-    python refnet.py --bib references.bib
-    python refnet.py --title "Highly accurate protein structure prediction"
+SUPPORTED INPUTS:
+  • PDF file        - paper.pdf (extracts DOIs from references)
+  • DOI             - 10.1038/s41586-021-03819-2
+  • BibTeX/RIS      - library.bib, references.ris (Zotero/EndNote export)
+  • JSON/CSV        - collection.json, papers.csv
+  • Topic string    - "aminoacyl-tRNA synthetase evolution"
+  • Directory       - /path/to/papers/ (processes all files)
+
+LAYERS (all automatic):
+  1. Citation expansion - references (backward) + citations (forward)
+  2. Author expansion   - first/last author works (3rd discovery axis)
+  3. Trajectory         - JSD drift detection, novelty jumps
+  4. Clustering         - Louvain community detection
+  5. Gap analysis       - unexplored areas in candidate pool
+
+GUARDRAILS:
+  • Hub suppression     - methodology papers (>5k cites) limited
+  • Relevance filter    - topic drift prevented
+  • Mega-author skip    - prolific authors don't explode graph
+
+USAGE:
+    python refnet.py paper.pdf
     python refnet.py --doi 10.1038/s41586-021-03819-2
+    python refnet.py library.bib --max-nodes 300
+    python refnet.py "CRISPR evolution" --with-gscholar
+    python refnet.py --collection papers.json -o my_network/
 """
 
 import argparse
@@ -449,5 +465,221 @@ examples:
     return 0
 
 
+def run_modern_pipeline(args, seeds):
+    """
+    run the modern pipeline with all layers.
+    uses refnet package (layers, trajectory, gap analysis).
+
+    this delegates to the proper modern architecture which uses:
+    - ExpansionEngine.build() method (not expand)
+    - CandidatePool with (config, db_path)
+    - WorkingGraph with (config)
+    """
+    from pathlib import Path
+    from refnet.providers.composite import create_default_provider
+    from refnet.inputs.collection import enrich_papers_with_provider
+    from refnet.graph.candidate_pool import CandidatePool
+    from refnet.graph.working_graph import WorkingGraph
+    from refnet.graph.expansion import ExpansionEngine
+    from refnet.export.formats import GraphExporter
+    from refnet.export.viewer import HTMLViewer
+    from refnet.core.config import RefnetConfig
+    from refnet.core.models import Paper, PaperStatus
+
+    # convert seeds to modern Paper format if needed
+    modern_seeds = []
+    for s in seeds:
+        if hasattr(s, 'doi') and s.doi:
+            p = Paper(
+                doi=s.doi,
+                title=getattr(s, 'title', '') or '',
+                year=getattr(s, 'year', None),
+                authors=getattr(s, 'authors', [])[:5] if hasattr(s, 'authors') else [],
+                status=PaperStatus.SEED
+            )
+            modern_seeds.append(p)
+
+    if not modern_seeds:
+        print("ERROR: No valid seeds with DOIs")
+        return 1
+
+    # create output directory
+    output_dir = Path(args.output) if hasattr(args, 'output') and args.output else Path('refnet_output')
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # create provider with optional google scholar
+    email = getattr(args, 'email', 'kiran@mcneese.edu')
+    provider = create_default_provider(
+        email=email,
+        use_google_scholar=getattr(args, 'use_gscholar', False)
+    )
+
+    # enrich seeds
+    print(f"\nEnriching {len(modern_seeds)} seeds...")
+    modern_seeds = enrich_papers_with_provider(modern_seeds, provider)
+    seeds_with_doi = [s for s in modern_seeds if s.doi]
+    print(f"Seeds with DOIs: {len(seeds_with_doi)}")
+
+    if not seeds_with_doi:
+        print("ERROR: No seeds with valid DOIs after enrichment")
+        return 1
+
+    # config - use proper RefnetConfig initialization
+    config = RefnetConfig()
+    config.providers.openalex_email = email
+
+    # set max nodes using proper config fields
+    max_nodes = getattr(args, 'max_nodes', 200)
+    config.working_graph.max_nodes_small = min(max_nodes, 500)
+    config.working_graph.max_nodes_medium = min(max_nodes, 2000)
+    config.working_graph.max_nodes_large = min(max_nodes, 5000)
+
+    # set expansion depth
+    config.expansion.max_depth = getattr(args, 'max_depth', 2)
+
+    # toggle layers
+    config.author.enabled = not getattr(args, 'no_authors', False)
+    config.trajectory.enabled = not getattr(args, 'no_trajectory', False)
+    config.gap_analysis.enabled = True
+
+    # create storage components
+    db_path = str(output_dir / 'candidates.db')
+    config.candidate_pool.db_path = db_path
+    pool = CandidatePool(config.candidate_pool, db_path)
+    graph = WorkingGraph(config.working_graph)
+
+    # run expansion engine (the correct way)
+    print(f"\n--- BUILDING GRAPH (modern pipeline) ---")
+    print(f"Seeds: {len(seeds_with_doi)}, Max nodes: {max_nodes}, Depth: {config.expansion.max_depth}")
+    print(f"Author expansion: {'ON' if config.author.enabled else 'OFF'}")
+    print(f"Trajectory analysis: {'ON' if config.trajectory.enabled else 'OFF'}")
+
+    # ExpansionEngine takes (provider, config) - not pool/graph
+    engine = ExpansionEngine(provider, config)
+
+    # build() takes seeds and returns a job with results
+    topic = getattr(args, 'topic', None) or (args.inputs[0] if hasattr(args, 'inputs') and args.inputs else None)
+    job = engine.build(seeds_with_doi, topic=topic, pool=pool, graph=graph)
+
+    # export results
+    print(f"\n--- EXPORTING ---")
+    exporter = GraphExporter(str(output_dir))
+
+    gap_result = job.gap_analysis if hasattr(job, 'gap_analysis') else None
+
+    exporter.export_json(graph, "graph.json", gap_result)
+    exporter.export_graphml(graph, "graph.graphml")
+    exporter.export_csv(graph)
+
+    viewer = HTMLViewer(str(output_dir))
+    title = topic or (seeds_with_doi[0].title[:50] if seeds_with_doi else "Citation Network")
+    viewer.generate(graph, "viewer.html", title, gap_result)
+
+    # summary
+    stats = graph.stats()
+
+    pool_stats = pool.stats()
+
+    print(f"\n--- RESULTS ---")
+    print(f"Working graph: {stats['papers']} papers, {stats['edges']} edges, {stats['clusters']} clusters")
+    print(f"Candidate pool: {pool_stats.get('papers', 0)} papers discovered")
+    print(f"Duration: {job.stats.duration_seconds:.1f}s, API calls: {job.stats.api_calls}")
+
+    if gap_result:
+        print(f"\n--- GAP ANALYSIS ---")
+        print(gap_result.summary)
+
+    print(f"\nOutput: {output_dir.absolute()}/")
+    print(f"View: firefox {output_dir}/viewer.html")
+
+    return 0
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    # check for --modern flag to use new pipeline
+    if '--modern' in sys.argv or '--all-layers' in sys.argv:
+        # parse minimal args and run modern pipeline
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument('inputs', nargs='*')
+        parser.add_argument('--pdf', type=str)
+        parser.add_argument('--bib', type=str)
+        parser.add_argument('--doi', type=str, action='append', help='DOI (can specify multiple)')
+        parser.add_argument('--title', type=str)
+        parser.add_argument('--collection', '-c', type=str)
+        parser.add_argument('--output', '-o', type=str, default='refnet_output')
+        parser.add_argument('--max-nodes', '-n', type=int, default=300)
+        parser.add_argument('--max-depth', '-d', type=int, default=2)
+        parser.add_argument('--email', type=str, default='user@example.com')
+        parser.add_argument('--use-gscholar', action='store_true')
+        parser.add_argument('--no-authors', action='store_true')
+        parser.add_argument('--no-trajectory', action='store_true')
+        parser.add_argument('--seed-limit', type=int, default=30, help='max seeds from collection')
+        parser.add_argument('--modern', action='store_true')
+        parser.add_argument('--all-layers', action='store_true')
+        args = parser.parse_args()
+
+        # collect seeds based on input
+        seeds = []
+
+        if args.collection:
+            from refnet.inputs.collection import load_collection
+            seeds = load_collection(args.collection, limit=args.seed_limit)
+        elif args.pdf:
+            main_paper, refs = load_seeds_from_pdf(args.pdf)
+            seeds = refs
+            if main_paper:
+                seeds.insert(0, main_paper)
+        elif args.bib:
+            seeds = load_seeds_from_bibtex(args.bib)
+        elif args.doi:
+            # support multiple DOIs
+            for doi in args.doi:
+                paper = lookup_seed_by_doi(doi)
+                if paper:
+                    seeds.append(paper)
+        elif args.title:
+            paper = lookup_seed_by_title(args.title)
+            if paper:
+                seeds = [paper]
+        elif args.inputs:
+            # topic search - use Google Scholar if requested, otherwise OpenAlex
+            topic = ' '.join(args.inputs)
+            if getattr(args, 'use_gscholar', False):
+                print(f"[topic] searching Google Scholar for: {topic}")
+                from refnet.providers.google_scholar import GoogleScholarProvider
+                from refnet.providers.openalex import OpenAlexProvider as ModernOpenAlex
+                gs_provider = GoogleScholarProvider(rate_limit_delay=3.0)
+                gs_results = gs_provider.search_papers(topic, limit=30)
+                print(f"[topic] found {len(gs_results)} papers from Google Scholar")
+
+                # enrich with DOIs via OpenAlex title lookup
+                print(f"[topic] looking up DOIs via OpenAlex...")
+                oa_provider = ModernOpenAlex(email=args.email)
+                enriched = []
+                for gs_paper in gs_results:
+                    if gs_paper.doi:
+                        enriched.append(gs_paper)
+                    elif gs_paper.title:
+                        # search by title
+                        oa_results = oa_provider.search_papers(f'"{gs_paper.title}"', limit=3)
+                        for oa in oa_results:
+                            if oa.doi and oa.title and gs_paper.title.lower()[:30] in oa.title.lower():
+                                print(f"  + {oa.title[:50]}... -> {oa.doi}")
+                                enriched.append(oa)
+                                break
+                results = enriched
+                print(f"[topic] {len(results)} papers with DOIs")
+            else:
+                from providers import OpenAlexProvider
+                provider = OpenAlexProvider(email=args.email)
+                results = provider.search_papers(topic, limit=30)
+            seeds = results
+
+        if seeds:
+            sys.exit(run_modern_pipeline(args, seeds))
+        else:
+            print("ERROR: No seeds found")
+            sys.exit(1)
+    else:
+        sys.exit(main())
