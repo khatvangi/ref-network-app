@@ -1,0 +1,5 @@
+#!/usr/bin/env python3
+"""RefNet Garden - organic network growth."""
+import sys
+from refnet.garden.commands import main
+sys.exit(main())

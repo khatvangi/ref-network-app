@@ -1,5 +1,36 @@
 # RefNet Manual — Running from Boron
 
+## NEW: Organic Garden Mode
+
+The garden grows with you over time - one global network that accumulates across sessions.
+
+```bash
+# plant a seed paper
+python -m refnet.garden.commands plant --doi 10.1073/pnas.1818339116
+
+# plant a seed author
+python -m refnet.garden.commands plant --author "Charles Carter"
+
+# grow the network
+python -m refnet.garden.commands grow --batch 20 --authors
+
+# check status (see leaders, disruptors, etc.)
+python -m refnet.garden.commands status
+
+# export
+python -m refnet.garden.commands export -o my_field.json
+```
+
+**Author Roles** (computed automatically):
+- **Leaders**: High impact, stable focus, many cite them
+- **Players**: Active contributors, connected
+- **Followers**: Follow trends, low citations
+- **Disruptors**: Rule-breakers! High drift, novelty jumps, bridge clusters
+
+The **disruptors** are the ones who create new science. High trajectory drift = potential breakthrough.
+
+---
+
 ## Quick Start (30 seconds)
 
 ```bash
