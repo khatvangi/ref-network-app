@@ -24,6 +24,7 @@ from ..layers.trajectory import TrajectoryLayer
 from ..analysis.hub import HubDetector
 from ..analysis.gap import GapAnalyzer
 from ..scoring.graph_relevance import GraphRelevanceScorer
+from ..graph.citation_walker import CitationWalker
 
 logger = logging.getLogger("refnet.expansion")
 
@@ -84,6 +85,7 @@ class ExpansionEngine:
         self.author_layer = AuthorLayer(provider, self.config.author)
         self.trajectory_layer = TrajectoryLayer(provider, self.config.trajectory)
         self.gap_analyzer = GapAnalyzer(self.config.gap_analysis)
+        self.citation_walker = CitationWalker(provider, self.config.expansion)
 
         # state
         self.api_call_count = 0
@@ -281,47 +283,21 @@ class ExpansionEngine:
             return
 
         # 1. backward references (what this paper cites)
-        # INTRO_HINT_CITES heuristic: first 25% of refs (clamped 10-40, max 20) are
-        # likely from the introduction section where problem/context is defined
+        # uses CitationWalker for intro-hint classification
         if limits["max_refs"] > 0:
             try:
-                refs = self.provider.get_references(paper_id, limit=limits["max_refs"])
-                self.api_call_count += 1
+                classified_refs, api_calls = self.citation_walker.fetch_refs_classified(
+                    paper_id, limits["max_refs"], paper.id, paper.id, paper.depth + 1
+                )
+                self.api_call_count += api_calls
 
-                if refs:
-                    # compute intro hint threshold per spec:
-                    # k = clamp(round(n * intro_fraction), 10, 40)
-                    # then cap at max_intro_hint_per_node
-                    n_refs = len(refs)
-                    intro_fraction = self.config.expansion.intro_fraction
-                    max_intro = self.config.expansion.max_intro_hint_per_node
-                    intro_weight = self.config.expansion.intro_hint_weight
-
-                    # calculate k: 25% of refs, minimum 10 (if enough refs), max 40
-                    k = int(n_refs * intro_fraction)
-                    if n_refs >= 10:
-                        k = max(k, 10)  # at least 10 if paper has 10+ refs
-                    k = min(k, 40)  # cap at 40
-                    k = min(k, max_intro)  # then cap at config limit (default 20)
-
-                    for i, ref in enumerate(refs):
-                        ref.discovered_from = paper.id
-                        ref.discovered_channel = "backward"
-                        ref.depth = paper.depth + 1
-
-                        # use returned paper to handle deduplication correctly
-                        added_ref = pool.add_paper(ref)
-                        if added_ref:
-                            stats.papers_discovered += 1
-
-                            # apply intro hint: first k refs get boosted weight
-                            is_intro_hint = i < k
-                            edge_type = EdgeType.INTRO_HINT_CITES if is_intro_hint else EdgeType.CITES
-                            edge_weight = intro_weight if is_intro_hint else 1.0
-
-                            pool.add_edge(paper.id, added_ref.id, edge_type, weight=edge_weight)
-                            stats.edges_created += 1
-                    paper.refs_fetched = True
+                for cref in classified_refs:
+                    added_ref = pool.add_paper(cref.paper)
+                    if added_ref:
+                        stats.papers_discovered += 1
+                        pool.add_edge(paper.id, added_ref.id, cref.edge_type, weight=cref.edge_weight)
+                        stats.edges_created += 1
+                paper.refs_fetched = True
             except KeyboardInterrupt:
                 raise
             except Exception as e:
@@ -331,24 +307,18 @@ class ExpansionEngine:
         # 2. forward citations (what cites this paper)
         if limits["max_cites"] > 0:
             try:
-                cites = self.provider.get_citations(paper_id, limit=limits["max_cites"])
-                self.api_call_count += 1
+                cites, api_calls = self.citation_walker.fetch_cites(
+                    paper_id, limits["max_cites"], paper.id, paper.depth + 1
+                )
+                self.api_call_count += api_calls
 
-                if cites:
-                    for cite in cites:
-                        cite.discovered_from = paper.id
-                        cite.discovered_channel = "forward"
-                        cite.depth = paper.depth + 1
-
-                        # use returned paper to handle deduplication correctly
-                        added_cite = pool.add_paper(cite)
-                        if added_cite:
-                            stats.papers_discovered += 1
-
-                            # add edge (citing paper -> this paper)
-                            pool.add_edge(added_cite.id, paper.id, EdgeType.CITES)
-                            stats.edges_created += 1
-                    paper.cites_fetched = True
+                for cite in cites:
+                    added_cite = pool.add_paper(cite)
+                    if added_cite:
+                        stats.papers_discovered += 1
+                        pool.add_edge(added_cite.id, paper.id, EdgeType.CITES)
+                        stats.edges_created += 1
+                paper.cites_fetched = True
             except KeyboardInterrupt:
                 raise
             except Exception as e:
@@ -825,74 +795,58 @@ class ExpansionEngine:
             if not seed_id:
                 continue
 
-            # backward: get intro refs (first 25%)
+            # backward: get intro refs only (uses CitationWalker)
             try:
-                refs = self.provider.get_references(seed_id, limit=self.config.expansion.max_refs_per_node)
-                state.total_api_calls += 1
+                intro_refs, api_calls = self.citation_walker.fetch_refs_intro_only(
+                    seed_id, self.config.expansion.max_refs_per_node, seed.id, depth=1
+                )
+                state.total_api_calls += api_calls
 
-                if refs:
-                    n_refs = len(refs)
-                    intro_fraction = self.config.expansion.intro_fraction
-                    k = int(n_refs * intro_fraction)
-                    if n_refs >= 10:
-                        k = max(k, 10)
-                    k = min(k, 40)
-                    k = min(k, self.config.expansion.max_intro_hint_per_node)
+                for cref in intro_refs:
+                    if cref.paper.id in state.seen_paper_ids:
+                        continue
 
-                    for i, ref in enumerate(refs[:k]):  # only intro refs for initial bucket
-                        if ref.id in state.seen_paper_ids:
-                            continue
+                    # compute basic relevance for filtering
+                    cref.paper.relevance_score = self._compute_basic_relevance(cref.paper, state.topic)
+                    state.relevance_history.append(cref.paper.relevance_score)
 
-                        # compute basic relevance
-                        ref.relevance_score = self._compute_basic_relevance(ref, state.topic)
-                        state.relevance_history.append(ref.relevance_score)
-
-                        if ref.relevance_score >= self.config.expansion.min_relevance:
-                            ref.discovered_from = seed.id
-                            ref.discovered_channel = "backward"
-                            ref.depth = 1
-
-                            # use returned paper to handle deduplication correctly
-                            added_ref = pool.add_paper(ref)
-                            if added_ref:
-                                pool.add_edge(seed.id, added_ref.id, EdgeType.INTRO_HINT_CITES, weight=2.0)
-                                bucket_papers.append(added_ref)
-                                state.seen_paper_ids.add(added_ref.id)
-                                state.total_papers_discovered += 1
-                                stats.papers_discovered += 1
-                                stats.edges_created += 1
+                    if cref.paper.relevance_score >= self.config.expansion.min_relevance:
+                        added_ref = pool.add_paper(cref.paper)
+                        if added_ref:
+                            pool.add_edge(seed.id, added_ref.id, cref.edge_type, weight=cref.edge_weight)
+                            bucket_papers.append(added_ref)
+                            state.seen_paper_ids.add(added_ref.id)
+                            state.total_papers_discovered += 1
+                            stats.papers_discovered += 1
+                            stats.edges_created += 1
             except Exception as e:
                 logger.warning(f"[bucket] refs failed for seed {(seed.title or '?')[:30]}: {e}")
                 stats.errors += 1
 
-            # forward: get citations
+            # forward: get citations (uses CitationWalker)
             try:
-                cites = self.provider.get_citations(seed_id, limit=self.config.expansion.max_cites_per_node)
-                state.total_api_calls += 1
+                cites, api_calls = self.citation_walker.fetch_cites(
+                    seed_id, self.config.expansion.max_cites_per_node, seed.id, depth=1
+                )
+                state.total_api_calls += api_calls
 
-                if cites:
-                    for cite in cites:
-                        if cite.id in state.seen_paper_ids:
-                            continue
+                for cite in cites:
+                    if cite.id in state.seen_paper_ids:
+                        continue
 
-                        # compute basic relevance
-                        cite.relevance_score = self._compute_basic_relevance(cite, state.topic)
-                        state.relevance_history.append(cite.relevance_score)
+                    # compute basic relevance for filtering
+                    cite.relevance_score = self._compute_basic_relevance(cite, state.topic)
+                    state.relevance_history.append(cite.relevance_score)
 
-                        if cite.relevance_score >= self.config.expansion.min_relevance:
-                            cite.discovered_from = seed.id
-                            cite.discovered_channel = "forward"
-                            cite.depth = 1
-
-                            # use returned paper to handle deduplication correctly
-                            added_cite = pool.add_paper(cite)
-                            if added_cite:
-                                pool.add_edge(added_cite.id, seed.id, EdgeType.CITES, weight=1.0)
-                                bucket_papers.append(added_cite)
-                                state.seen_paper_ids.add(added_cite.id)
-                                state.total_papers_discovered += 1
-                                stats.papers_discovered += 1
-                                stats.edges_created += 1
+                    if cite.relevance_score >= self.config.expansion.min_relevance:
+                        added_cite = pool.add_paper(cite)
+                        if added_cite:
+                            pool.add_edge(added_cite.id, seed.id, EdgeType.CITES, weight=1.0)
+                            bucket_papers.append(added_cite)
+                            state.seen_paper_ids.add(added_cite.id)
+                            state.total_papers_discovered += 1
+                            stats.papers_discovered += 1
+                            stats.edges_created += 1
             except Exception as e:
                 logger.warning(f"[bucket] cites failed for seed {(seed.title or '?')[:30]}: {e}")
                 stats.errors += 1
@@ -922,6 +876,8 @@ class ExpansionEngine:
         """
         new_papers = []
 
+        depth = bucket.generation + 2  # +2 because bucket gen starts at 0
+
         for paper in bucket.papers:
             # check api budget
             if state.total_api_calls >= self.config.expansion.max_api_calls_per_job:
@@ -931,74 +887,58 @@ class ExpansionEngine:
             if not paper_id:
                 continue
 
-            # backward: intro refs (first 25%)
+            # backward: intro refs only (uses CitationWalker)
             try:
-                refs = self.provider.get_references(paper_id, limit=self.config.expansion.max_refs_per_node)
-                state.total_api_calls += 1
+                intro_refs, api_calls = self.citation_walker.fetch_refs_intro_only(
+                    paper_id, self.config.expansion.max_refs_per_node, paper.id, depth
+                )
+                state.total_api_calls += api_calls
                 bucket.total_refs_fetched += 1
 
-                if refs:
-                    n_refs = len(refs)
-                    intro_fraction = self.config.expansion.intro_fraction
-                    k = int(n_refs * intro_fraction)
-                    if n_refs >= 10:
-                        k = max(k, 10)
-                    k = min(k, 40)
-                    k = min(k, self.config.expansion.max_intro_hint_per_node)
+                for cref in intro_refs:
+                    if cref.paper.id in state.seen_paper_ids:
+                        continue
 
-                    for i, ref in enumerate(refs[:k]):
-                        if ref.id in state.seen_paper_ids:
-                            continue
+                    cref.paper.relevance_score = self._compute_basic_relevance(cref.paper, topic)
+                    state.relevance_history.append(cref.paper.relevance_score)
 
-                        ref.relevance_score = self._compute_basic_relevance(ref, topic)
-                        state.relevance_history.append(ref.relevance_score)
-
-                        if ref.relevance_score >= self.config.expansion.min_relevance:
-                            ref.discovered_from = paper.id
-                            ref.discovered_channel = "backward"
-                            ref.depth = bucket.generation + 2  # +2 because bucket gen starts at 0
-
-                            # use returned paper to handle deduplication correctly
-                            added_ref = pool.add_paper(ref)
-                            if added_ref:
-                                pool.add_edge(paper.id, added_ref.id, EdgeType.INTRO_HINT_CITES, weight=2.0)
-                                new_papers.append(added_ref)
-                                state.seen_paper_ids.add(added_ref.id)
-                                state.total_papers_discovered += 1
-                                stats.papers_discovered += 1
-                                stats.edges_created += 1
+                    if cref.paper.relevance_score >= self.config.expansion.min_relevance:
+                        added_ref = pool.add_paper(cref.paper)
+                        if added_ref:
+                            pool.add_edge(paper.id, added_ref.id, cref.edge_type, weight=cref.edge_weight)
+                            new_papers.append(added_ref)
+                            state.seen_paper_ids.add(added_ref.id)
+                            state.total_papers_discovered += 1
+                            stats.papers_discovered += 1
+                            stats.edges_created += 1
             except Exception as e:
                 logger.warning(f"[bucket] refs failed: {e}")
                 stats.errors += 1
 
-            # forward: citations
+            # forward: citations (uses CitationWalker)
             try:
-                cites = self.provider.get_citations(paper_id, limit=self.config.expansion.max_cites_per_node)
-                state.total_api_calls += 1
+                cites, api_calls = self.citation_walker.fetch_cites(
+                    paper_id, self.config.expansion.max_cites_per_node, paper.id, depth
+                )
+                state.total_api_calls += api_calls
                 bucket.total_cites_fetched += 1
 
-                if cites:
-                    for cite in cites:
-                        if cite.id in state.seen_paper_ids:
-                            continue
+                for cite in cites:
+                    if cite.id in state.seen_paper_ids:
+                        continue
 
-                        cite.relevance_score = self._compute_basic_relevance(cite, topic)
-                        state.relevance_history.append(cite.relevance_score)
+                    cite.relevance_score = self._compute_basic_relevance(cite, topic)
+                    state.relevance_history.append(cite.relevance_score)
 
-                        if cite.relevance_score >= self.config.expansion.min_relevance:
-                            cite.discovered_from = paper.id
-                            cite.discovered_channel = "forward"
-                            cite.depth = bucket.generation + 2
-
-                            # use returned paper to handle deduplication correctly
-                            added_cite = pool.add_paper(cite)
-                            if added_cite:
-                                pool.add_edge(added_cite.id, paper.id, EdgeType.CITES, weight=1.0)
-                                new_papers.append(added_cite)
-                                state.seen_paper_ids.add(added_cite.id)
-                                state.total_papers_discovered += 1
-                                stats.papers_discovered += 1
-                                stats.edges_created += 1
+                    if cite.relevance_score >= self.config.expansion.min_relevance:
+                        added_cite = pool.add_paper(cite)
+                        if added_cite:
+                            pool.add_edge(added_cite.id, paper.id, EdgeType.CITES, weight=1.0)
+                            new_papers.append(added_cite)
+                            state.seen_paper_ids.add(added_cite.id)
+                            state.total_papers_discovered += 1
+                            stats.papers_discovered += 1
+                            stats.edges_created += 1
             except Exception as e:
                 logger.warning(f"[bucket] cites failed: {e}")
                 stats.errors += 1
@@ -1143,75 +1083,60 @@ class ExpansionEngine:
             return None
 
         child_papers = []
+        depth = parent_bucket.generation + 2
 
-        # backward: intro refs (first 25%)
+        # backward: intro refs only (uses CitationWalker)
         try:
-            refs = self.provider.get_references(paper_id, limit=self.config.expansion.max_refs_per_node)
-            state.total_api_calls += 1
+            intro_refs, api_calls = self.citation_walker.fetch_refs_intro_only(
+                paper_id, self.config.expansion.max_refs_per_node, paper.id, depth
+            )
+            state.total_api_calls += api_calls
 
-            if refs:
-                n_refs = len(refs)
-                intro_fraction = self.config.expansion.intro_fraction
-                k = int(n_refs * intro_fraction)
-                if n_refs >= 10:
-                    k = max(k, 10)
-                k = min(k, 40)
-                k = min(k, self.config.expansion.max_intro_hint_per_node)
+            for cref in intro_refs:
+                if cref.paper.id in state.seen_paper_ids:
+                    continue
 
-                for ref in refs[:k]:
-                    if ref.id in state.seen_paper_ids:
-                        continue
+                cref.paper.relevance_score = self._compute_basic_relevance(cref.paper, topic)
+                state.relevance_history.append(cref.paper.relevance_score)
 
-                    ref.relevance_score = self._compute_basic_relevance(ref, topic)
-                    state.relevance_history.append(ref.relevance_score)
-
-                    if ref.relevance_score >= self.config.expansion.min_relevance:
-                        ref.discovered_from = paper.id
-                        ref.discovered_channel = "backward"
-                        ref.depth = parent_bucket.generation + 2
-
-                        # use returned paper to handle deduplication correctly
-                        added_ref = pool.add_paper(ref)
-                        if added_ref:
-                            pool.add_edge(paper.id, added_ref.id, EdgeType.INTRO_HINT_CITES, weight=2.0)
-                            child_papers.append(added_ref)
-                            state.seen_paper_ids.add(added_ref.id)
-                            state.total_papers_discovered += 1
-                            stats.papers_discovered += 1
-                            stats.edges_created += 1
+                if cref.paper.relevance_score >= self.config.expansion.min_relevance:
+                    added_ref = pool.add_paper(cref.paper)
+                    if added_ref:
+                        pool.add_edge(paper.id, added_ref.id, cref.edge_type, weight=cref.edge_weight)
+                        child_papers.append(added_ref)
+                        state.seen_paper_ids.add(added_ref.id)
+                        state.total_papers_discovered += 1
+                        stats.papers_discovered += 1
+                        stats.edges_created += 1
         except Exception as e:
-            logger.warning(f"[dendrimer] refs failed for {paper.title[:30] if paper.title else '?'}: {e}")
+            logger.warning(f"[dendrimer] refs failed for {(paper.title or '?')[:30]}: {e}")
             stats.errors += 1
 
-        # forward: citations
+        # forward: citations (uses CitationWalker)
         try:
-            cites = self.provider.get_citations(paper_id, limit=self.config.expansion.max_cites_per_node)
-            state.total_api_calls += 1
+            cites, api_calls = self.citation_walker.fetch_cites(
+                paper_id, self.config.expansion.max_cites_per_node, paper.id, depth
+            )
+            state.total_api_calls += api_calls
 
-            if cites:
-                for cite in cites:
-                    if cite.id in state.seen_paper_ids:
-                        continue
+            for cite in cites:
+                if cite.id in state.seen_paper_ids:
+                    continue
 
-                    cite.relevance_score = self._compute_basic_relevance(cite, topic)
-                    state.relevance_history.append(cite.relevance_score)
+                cite.relevance_score = self._compute_basic_relevance(cite, topic)
+                state.relevance_history.append(cite.relevance_score)
 
-                    if cite.relevance_score >= self.config.expansion.min_relevance:
-                        cite.discovered_from = paper.id
-                        cite.discovered_channel = "forward"
-                        cite.depth = parent_bucket.generation + 2
-
-                        # use returned paper to handle deduplication correctly
-                        added_cite = pool.add_paper(cite)
-                        if added_cite:
-                            pool.add_edge(added_cite.id, paper.id, EdgeType.CITES, weight=1.0)
-                            child_papers.append(added_cite)
-                            state.seen_paper_ids.add(added_cite.id)
-                            state.total_papers_discovered += 1
-                            stats.papers_discovered += 1
-                            stats.edges_created += 1
+                if cite.relevance_score >= self.config.expansion.min_relevance:
+                    added_cite = pool.add_paper(cite)
+                    if added_cite:
+                        pool.add_edge(added_cite.id, paper.id, EdgeType.CITES, weight=1.0)
+                        child_papers.append(added_cite)
+                        state.seen_paper_ids.add(added_cite.id)
+                        state.total_papers_discovered += 1
+                        stats.papers_discovered += 1
+                        stats.edges_created += 1
         except Exception as e:
-            logger.warning(f"[dendrimer] cites failed for {paper.title[:30] if paper.title else '?'}: {e}")
+            logger.warning(f"[dendrimer] cites failed for {(paper.title or '?')[:30]}: {e}")
             stats.errors += 1
 
         # create child bucket
