@@ -118,13 +118,35 @@ class DriftEvent:
 
 
 @dataclass
+class EducationRecord:
+    """education record from ORCID."""
+    institution: str
+    degree: Optional[str] = None  # PhD, MS, BS, etc.
+    department: Optional[str] = None
+    start_year: Optional[int] = None
+    end_year: Optional[int] = None
+
+
+@dataclass
 class EmploymentPeriod:
     """employment/affiliation period from ORCID."""
     organization: str
     role: Optional[str] = None
+    department: Optional[str] = None
     start_year: Optional[int] = None
     end_year: Optional[int] = None  # None = current
-    department: Optional[str] = None
+    is_current: bool = False
+
+
+@dataclass
+class WorkTypeStats:
+    """breakdown of work types."""
+    total: int = 0
+    journal_articles: int = 0
+    conference_papers: int = 0
+    preprints: int = 0
+    books_chapters: int = 0
+    other: int = 0
 
 
 @dataclass
@@ -145,8 +167,16 @@ class TrajectoryAnalysis:
     career_years: int = 0
     total_papers: int = 0
 
-    # employment history (from ORCID)
+    # from ORCID
+    biography: Optional[str] = None
+    keywords: List[str] = field(default_factory=list)
+    education_history: List[EducationRecord] = field(default_factory=list)
     employment_history: List[EmploymentPeriod] = field(default_factory=list)
+    funding_count: int = 0
+    peer_review_count: int = 0
+
+    # work type breakdown
+    work_types: Optional[WorkTypeStats] = None
 
     # phases
     phases: List[ResearchPhase] = field(default_factory=list)
@@ -274,10 +304,12 @@ class TrajectoryAnalyzer(Agent):
 
         result.add_trace(f"career span: {analysis.career_start}-{analysis.career_end} ({analysis.career_years} years)")
 
-        # step 0: fetch ORCID employment history if available
+        # step 0: fetch ORCID profile if available
         if self.orcid_provider and corpus.orcid:
-            employment = self._fetch_employment_history(corpus.orcid, result)
-            analysis.employment_history = employment
+            self._fetch_orcid_profile(corpus.orcid, analysis, result)
+
+        # step 0.5: analyze work types (conference vs journal)
+        analysis.work_types = self._analyze_work_types(papers_with_years, result)
 
         # step 1: build concept timeline with filtering
         concept_timeline = self._build_concept_timeline(papers_with_years, result)
@@ -783,36 +815,149 @@ class TrajectoryAnalyzer(Agent):
 
         return [c[0] for c in emerging[:5]], [c[0] for c in declining[:5]]
 
-    def _fetch_employment_history(
+    def _fetch_orcid_profile(
         self,
         orcid: str,
+        analysis: TrajectoryAnalysis,
         result: AgentResult
-    ) -> List[EmploymentPeriod]:
-        """fetch employment history from ORCID."""
+    ):
+        """fetch comprehensive ORCID profile and populate analysis."""
         if not self.orcid_provider:
-            return []
+            return
 
-        result.add_trace(f"fetching ORCID employment for {orcid}")
+        result.add_trace(f"fetching ORCID profile for {orcid}")
 
         try:
-            author_info = self.orcid_provider.get_author_by_orcid(orcid)
-            if not author_info:
-                return []
+            # check if provider has get_full_profile (expanded provider)
+            if hasattr(self.orcid_provider, 'get_full_profile'):
+                profile = self.orcid_provider.get_full_profile(orcid)
+                if not profile:
+                    result.add_warning("could not fetch ORCID profile")
+                    return
 
-            # ORCID affiliations don't have full details in basic API
-            # but we can create periods from available data
-            periods = []
-            for affil in (author_info.affiliations or []):
-                periods.append(EmploymentPeriod(
-                    organization=affil
-                ))
+                # biography and keywords
+                analysis.biography = profile.biography
+                analysis.keywords = profile.keywords or []
 
-            result.add_trace(f"found {len(periods)} employment periods")
-            return periods
+                # education history
+                for edu in (profile.educations or []):
+                    analysis.education_history.append(EducationRecord(
+                        institution=edu.institution,
+                        degree=edu.degree,
+                        department=edu.department,
+                        start_year=edu.start_year,
+                        end_year=edu.end_year
+                    ))
+
+                # employment history
+                for emp in (profile.employments or []):
+                    analysis.employment_history.append(EmploymentPeriod(
+                        organization=emp.organization,
+                        role=emp.role,
+                        department=emp.department,
+                        start_year=emp.start_year,
+                        end_year=emp.end_year,
+                        is_current=emp.is_current
+                    ))
+
+                # funding and peer review counts
+                analysis.funding_count = profile.total_funding_count
+                analysis.peer_review_count = profile.peer_review_count
+
+                result.add_trace(
+                    f"ORCID: {len(analysis.education_history)} educations, "
+                    f"{len(analysis.employment_history)} employments, "
+                    f"{analysis.funding_count} fundings"
+                )
+
+            else:
+                # fallback to basic provider
+                author_info = self.orcid_provider.get_author_by_orcid(orcid)
+                if author_info:
+                    for affil in (author_info.affiliations or []):
+                        analysis.employment_history.append(EmploymentPeriod(
+                            organization=affil
+                        ))
+                    result.add_trace(f"ORCID (basic): {len(analysis.employment_history)} affiliations")
 
         except Exception as e:
             result.add_warning(f"could not fetch ORCID: {e}")
-            return []
+
+    def _analyze_work_types(
+        self,
+        papers: List[Paper],
+        result: AgentResult
+    ) -> WorkTypeStats:
+        """
+        analyze work types from OpenAlex paper metadata.
+
+        OpenAlex provides 'type' field with values like:
+        - article, review, book-chapter, proceedings-article, etc.
+
+        we also infer from venue names (conference vs journal).
+        """
+        result.add_trace("analyzing work types")
+
+        stats = WorkTypeStats(total=len(papers))
+
+        # conference venue keywords
+        conference_keywords = {
+            'conference', 'proceedings', 'symposium', 'workshop',
+            'meeting', 'congress', 'summit', 'icml', 'neurips', 'cvpr',
+            'acl', 'emnlp', 'iclr', 'aaai', 'ijcai', 'chi', 'sigir'
+        }
+
+        # preprint server keywords
+        preprint_keywords = {
+            'arxiv', 'biorxiv', 'medrxiv', 'chemrxiv', 'preprint',
+            'ssrn', 'research square', 'authorea'
+        }
+
+        for paper in papers:
+            # check OpenAlex type if available (stored in paper metadata)
+            # Paper model doesn't have explicit 'type' field, but we can check venue
+
+            venue = (paper.venue or '').lower()
+            title = (paper.title or '').lower()
+
+            # detect conference papers
+            is_conference = False
+            if any(kw in venue for kw in conference_keywords):
+                is_conference = True
+            elif 'proc.' in venue or 'proceedings' in venue:
+                is_conference = True
+
+            # detect preprints
+            is_preprint = False
+            if any(kw in venue for kw in preprint_keywords):
+                is_preprint = True
+
+            # detect reviews (from title or is_review flag)
+            is_review = paper.is_review
+
+            # categorize
+            if is_conference:
+                stats.conference_papers += 1
+            elif is_preprint:
+                stats.preprints += 1
+            elif is_review:
+                # reviews are still journal articles
+                stats.journal_articles += 1
+            else:
+                # default to journal article
+                stats.journal_articles += 1
+
+        stats.other = stats.total - (
+            stats.journal_articles + stats.conference_papers +
+            stats.preprints + stats.books_chapters
+        )
+
+        result.add_trace(
+            f"work types: {stats.journal_articles} journal, "
+            f"{stats.conference_papers} conference, {stats.preprints} preprint"
+        )
+
+        return stats
 
     def _generate_insights(
         self,
@@ -827,6 +972,38 @@ class TrajectoryAnalyzer(Agent):
             f"{analysis.author_name} has been publishing for {analysis.career_years} years "
             f"({analysis.career_start}-{analysis.career_end}), with {analysis.total_papers} papers."
         )
+
+        # education (if available from ORCID)
+        if analysis.education_history:
+            phds = [e for e in analysis.education_history if e.degree and 'phd' in e.degree.lower()]
+            if phds:
+                phd = phds[0]
+                phd_info = f"PhD from {phd.institution}"
+                if phd.end_year:
+                    phd_info += f" ({phd.end_year})"
+                analysis.add_insight(phd_info)
+
+        # current position (if available from ORCID)
+        if analysis.employment_history:
+            current = [e for e in analysis.employment_history if e.is_current]
+            if current:
+                emp = current[0]
+                pos_info = f"Currently at {emp.organization}"
+                if emp.role:
+                    pos_info = f"Currently: {emp.role} at {emp.organization}"
+                analysis.add_insight(pos_info)
+
+        # work type breakdown
+        if analysis.work_types:
+            wt = analysis.work_types
+            if wt.conference_papers > 0:
+                conf_pct = (wt.conference_papers / wt.total) * 100 if wt.total else 0
+                if conf_pct > 20:
+                    analysis.add_insight(
+                        f"Active conference presenter: {wt.conference_papers} conference papers ({conf_pct:.0f}%)"
+                    )
+            if wt.preprints > 0:
+                analysis.add_insight(f"Preprint activity: {wt.preprints} preprints")
 
         # core concepts
         if analysis.core_concepts:

@@ -134,8 +134,31 @@ def test_trajectory_analyzer(corpus):
 
         if traj.insights:
             print(f"\n7. Insights:")
-            for insight in traj.insights[:3]:
+            for insight in traj.insights:
                 print(f"   - {insight}")
+
+        # show ORCID data if available
+        if traj.education_history:
+            print(f"\n8. Education (from ORCID):")
+            for edu in traj.education_history[:3]:
+                degree = edu.degree or "Degree"
+                years = f"{edu.start_year or '?'}-{edu.end_year or 'present'}"
+                print(f"   - {degree} @ {edu.institution} ({years})")
+
+        if traj.employment_history:
+            print(f"\n9. Employment (from ORCID):")
+            for emp in traj.employment_history[:3]:
+                role = emp.role or "Position"
+                status = "(current)" if emp.is_current else ""
+                years = f"{emp.start_year or '?'}-{emp.end_year or 'present'}"
+                print(f"   - {role} @ {emp.organization} {years} {status}")
+
+        if traj.work_types:
+            print(f"\n10. Work Types:")
+            wt = traj.work_types
+            print(f"    Journal articles: {wt.journal_articles}")
+            print(f"    Conference papers: {wt.conference_papers}")
+            print(f"    Preprints: {wt.preprints}")
     else:
         print("   FAILED: No data returned")
 
