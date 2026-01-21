@@ -337,9 +337,19 @@ class OpenAlexProvider(PaperProvider):
         author_id: str,
         year_min: Optional[int] = None,
         year_max: Optional[int] = None,
-        limit: int = 50
+        limit: int = 50,
+        offset: int = 0
     ) -> List[Paper]:
-        """get papers by author."""
+        """
+        get papers by author with pagination support.
+
+        args:
+            author_id: OpenAlex author ID (A12345)
+            year_min: filter papers from this year
+            year_max: filter papers up to this year
+            limit: max papers to return (per_page)
+            offset: skip this many papers (for pagination)
+        """
         # normalize author id
         if author_id.startswith("A"):
             oa_author_id = author_id
@@ -354,10 +364,15 @@ class OpenAlexProvider(PaperProvider):
         if year_max:
             filters.append(f"to_publication_date:{year_max}-12-31")
 
+        # convert offset to page number (1-indexed)
+        per_page = min(limit, 200)
+        page = (offset // per_page) + 1
+
         data = self._request("works", {
             "filter": ",".join(filters),
-            "per_page": min(limit, 200),
-            "sort": "cited_by_count:desc"
+            "per_page": per_page,
+            "page": page,
+            "sort": "publication_year:desc"  # sort by year for corpus view
         })
 
         if not data:
@@ -531,13 +546,20 @@ class OpenAlexProvider(PaperProvider):
         if last_inst:
             affiliations.append(last_inst.get("display_name", ""))
 
+        # h_index from summary_stats
+        h_index = None
+        summary_stats = author.get("summary_stats", {})
+        if summary_stats:
+            h_index = summary_stats.get("h_index")
+
         return AuthorInfo(
             name=author.get("display_name", ""),
             orcid=orcid,
             openalex_id=oa_id,
             affiliations=affiliations,
             paper_count=author.get("works_count"),
-            citation_count=author.get("cited_by_count")
+            citation_count=author.get("cited_by_count"),
+            h_index=h_index
         )
 
     def stats(self) -> Dict:

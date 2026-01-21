@@ -20,6 +20,7 @@ class AuthorInfo:
     affiliations: List[str] = None
     paper_count: Optional[int] = None
     citation_count: Optional[int] = None
+    h_index: Optional[int] = None  # from openalex summary_stats
 
     def __post_init__(self):
         if self.affiliations is None:
@@ -89,9 +90,10 @@ class PaperProvider(ABC):
         author_id: str,
         year_min: Optional[int] = None,
         year_max: Optional[int] = None,
-        limit: int = 50
+        limit: int = 50,
+        offset: int = 0
     ) -> List[Paper]:
-        """get papers by author."""
+        """get papers by author with pagination."""
         return []
 
     def resolve_author_id(
