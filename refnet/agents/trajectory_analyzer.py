@@ -9,6 +9,12 @@ answers key questions:
 
 input: AuthorCorpus (from CorpusFetcher)
 output: TrajectoryAnalysis with phases, drift events, and insights
+
+tuning notes (v2):
+- filters generic/noisy concepts from OpenAlex
+- uses sliding windows for drift detection (not year-to-year)
+- merges short phases into coherent research periods
+- uses cosine similarity for smoother drift measurement
 """
 
 import logging
@@ -20,6 +26,44 @@ from typing import List, Optional, Dict, Any, Set, Tuple
 from .base import Agent, AgentResult, AgentStatus
 from .corpus_fetcher import AuthorCorpus
 from ..core.models import Paper
+
+
+# generic concepts to filter out - these don't reveal research focus
+GENERIC_CONCEPTS = {
+    # very broad fields
+    'biology', 'chemistry', 'physics', 'medicine', 'computer science',
+    'mathematics', 'engineering', 'science', 'technology',
+    # broad bio
+    'biochemistry', 'molecular biology', 'cell biology', 'genetics',
+    'bioinformatics', 'computational biology', 'biophysics',
+    # broad chem
+    'organic chemistry', 'inorganic chemistry', 'physical chemistry',
+    # meta/noise
+    'research', 'study', 'analysis', 'method', 'experiment',
+    'data', 'model', 'algorithm', 'system', 'process',
+    # geographic/institutional noise
+    'south carolina', 'north carolina', 'california', 'new york',
+    'family medicine', 'continuing education', 'medical education',
+    # artifacts from OpenAlex misclassification
+    'context (archaeology)', 'crew', 'real estate', 'nursing',
+    'paleontology', 'trojan', 'zoology', 'archaeology',
+    'path (computing)', 'reliability (semiconductor)',
+    'substitution (logic)', 'interpolation (computer graphics)',
+    'cleavage (geology)', 'denaturation (fissile materials)',
+    'core (optical fiber)', 'phase (matter)', 'polar',
+    'sketch', 'cuff', 'transcription (linguistics)',
+    'groundwater', 'ethylene glycol', 'digital signal processing',
+    'signal processing', 'mean absolute percentage error',
+    'yield (engineering)', 'resource (disambiguation)',
+    'overfitting', 'quality management', 'intensive care medicine',
+}
+
+# concepts that indicate methodology papers (not topic papers)
+METHODOLOGY_CONCEPTS = {
+    'machine learning', 'deep learning', 'neural network',
+    'algorithm', 'software', 'database', 'web service',
+    'python', 'r programming', 'statistics',
+}
 
 
 @dataclass
@@ -74,6 +118,16 @@ class DriftEvent:
 
 
 @dataclass
+class EmploymentPeriod:
+    """employment/affiliation period from ORCID."""
+    organization: str
+    role: Optional[str] = None
+    start_year: Optional[int] = None
+    end_year: Optional[int] = None  # None = current
+    department: Optional[str] = None
+
+
+@dataclass
 class TrajectoryAnalysis:
     """
     complete trajectory analysis for an author.
@@ -83,12 +137,16 @@ class TrajectoryAnalysis:
     # identity
     author_id: str
     author_name: str
+    orcid: Optional[str] = None
 
     # career span
-    career_start: int
-    career_end: int
-    career_years: int
-    total_papers: int
+    career_start: int = 0
+    career_end: int = 0
+    career_years: int = 0
+    total_papers: int = 0
+
+    # employment history (from ORCID)
+    employment_history: List[EmploymentPeriod] = field(default_factory=list)
 
     # phases
     phases: List[ResearchPhase] = field(default_factory=list)
@@ -106,6 +164,9 @@ class TrajectoryAnalysis:
     # current direction
     emerging_concepts: List[str] = field(default_factory=list)
     declining_concepts: List[str] = field(default_factory=list)
+
+    # core concepts (appear throughout career)
+    core_concepts: List[str] = field(default_factory=list)
 
     # insights
     insights: List[str] = field(default_factory=list)
@@ -125,6 +186,13 @@ class TrajectoryAnalyzer(Agent):
     - trajectory type (focused vs. explorer)
     - current direction (where they're heading)
 
+    v2 improvements:
+    - filters generic concepts (Biology, Chemistry, etc.)
+    - uses 3-year sliding windows for smoother drift detection
+    - merges short phases (< 3 years)
+    - uses cosine similarity instead of jaccard distance
+    - can integrate ORCID employment history
+
     usage:
         analyzer = TrajectoryAnalyzer()
         result = analyzer.run(corpus)
@@ -136,21 +204,26 @@ class TrajectoryAnalyzer(Agent):
                 print(f"  {phase.start_year}-{phase.end_year}: {phase.label}")
     """
 
-    # parameters for analysis
-    MIN_PAPERS_FOR_PHASE = 3  # need at least this many to form a phase
-    DRIFT_THRESHOLD = 0.3  # drift above this is "significant"
-    NOVELTY_JUMP_THRESHOLD = 0.5  # drift above this is a "novelty jump"
+    # tuned parameters
+    MIN_PAPERS_FOR_PHASE = 5  # increased from 3
+    MIN_PHASE_YEARS = 3  # minimum years for a phase
+    DRIFT_THRESHOLD = 0.4  # increased from 0.3 (less sensitive)
+    NOVELTY_JUMP_THRESHOLD = 0.6  # increased from 0.5
     WINDOW_SIZE = 3  # years to group for concept analysis
 
     def __init__(
         self,
         window_size: int = 3,
-        drift_threshold: float = 0.3,
+        drift_threshold: float = 0.4,
+        min_phase_years: int = 3,
+        orcid_provider=None,  # optional ORCID provider
         logger: Optional[logging.Logger] = None
     ):
         super().__init__(logger)
         self.window_size = window_size
         self.drift_threshold = drift_threshold
+        self.min_phase_years = min_phase_years
+        self.orcid_provider = orcid_provider
 
     @property
     def name(self) -> str:
@@ -183,7 +256,7 @@ class TrajectoryAnalyzer(Agent):
 
         # filter papers with years
         papers_with_years = [p for p in corpus.papers if p.year]
-        if len(papers_with_years) < 3:
+        if len(papers_with_years) < 5:
             result.status = AgentStatus.PARTIAL
             result.add_warning(f"only {len(papers_with_years)} papers with years, analysis may be limited")
 
@@ -192,6 +265,7 @@ class TrajectoryAnalyzer(Agent):
         analysis = TrajectoryAnalysis(
             author_id=corpus.author_id,
             author_name=corpus.name,
+            orcid=corpus.orcid,
             career_start=min(years) if years else 0,
             career_end=max(years) if years else 0,
             career_years=(max(years) - min(years) + 1) if years else 0,
@@ -200,11 +274,19 @@ class TrajectoryAnalyzer(Agent):
 
         result.add_trace(f"career span: {analysis.career_start}-{analysis.career_end} ({analysis.career_years} years)")
 
-        # step 1: build concept timeline
+        # step 0: fetch ORCID employment history if available
+        if self.orcid_provider and corpus.orcid:
+            employment = self._fetch_employment_history(corpus.orcid, result)
+            analysis.employment_history = employment
+
+        # step 1: build concept timeline with filtering
         concept_timeline = self._build_concept_timeline(papers_with_years, result)
 
-        # step 2: detect drift events
-        drift_events = self._detect_drift_events(concept_timeline, result)
+        # step 2: find core concepts (appear in >50% of years)
+        analysis.core_concepts = self._find_core_concepts(concept_timeline, result)
+
+        # step 3: detect drift events using windowed comparison
+        drift_events = self._detect_drift_events_windowed(concept_timeline, result)
         analysis.drift_events = drift_events
 
         # compute drift statistics
@@ -212,22 +294,23 @@ class TrajectoryAnalyzer(Agent):
             analysis.total_drift = sum(d.drift_magnitude for d in drift_events)
             analysis.avg_drift_per_year = analysis.total_drift / max(analysis.career_years, 1)
 
-        # step 3: identify phases (based on drift events)
+        # step 4: identify phases (based on drift events) and merge short ones
         phases = self._identify_phases(papers_with_years, drift_events, result)
+        phases = self._merge_short_phases(phases, papers_with_years, result)
         analysis.phases = phases
         if phases:
             analysis.current_phase = phases[-1]
 
-        # step 4: determine trajectory type
+        # step 5: determine trajectory type
         analysis.trajectory_type = self._classify_trajectory(analysis, result)
         analysis.stability_score = self._compute_stability(analysis)
 
-        # step 5: find current direction
+        # step 6: find current direction
         emerging, declining = self._find_direction(concept_timeline, result)
         analysis.emerging_concepts = emerging
         analysis.declining_concepts = declining
 
-        # step 6: generate insights
+        # step 7: generate insights
         self._generate_insights(analysis, corpus, reference_concepts, result)
 
         result.data = analysis
@@ -235,78 +318,137 @@ class TrajectoryAnalyzer(Agent):
 
         return result
 
+    def _filter_concept(self, concept_name: str) -> bool:
+        """return True if concept should be kept (not generic)."""
+        name_lower = concept_name.lower().strip()
+
+        # filter generic concepts
+        if name_lower in GENERIC_CONCEPTS:
+            return False
+
+        # filter very short names (usually noise)
+        if len(name_lower) < 3:
+            return False
+
+        return True
+
     def _build_concept_timeline(
         self,
         papers: List[Paper],
         result: AgentResult
     ) -> Dict[int, Dict[str, float]]:
         """
-        build year -> {concept: weight} mapping.
+        build year -> {concept: weight} mapping with filtering.
 
-        groups papers by year and aggregates concept weights.
+        filters out generic concepts and normalizes weights.
         """
-        result.add_trace("building concept timeline")
+        result.add_trace("building concept timeline with filtering")
 
         timeline: Dict[int, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
+        filtered_count = 0
 
         for paper in papers:
             year = paper.year
             if not year:
                 continue
 
-            for concept in (paper.concepts or [])[:7]:
-                name = concept.get('name', '').lower()
+            for concept in (paper.concepts or [])[:10]:
+                name = concept.get('name', '')
                 score = concept.get('score', 0.5)
-                if name:
-                    timeline[year][name] += score
 
-        result.add_trace(f"timeline built: {len(timeline)} years")
+                if not name:
+                    continue
+
+                # filter generic concepts
+                if not self._filter_concept(name):
+                    filtered_count += 1
+                    continue
+
+                # use original case for display but lowercase for dedup
+                name_key = name.lower().strip()
+                timeline[year][name_key] += score
+
+        # normalize weights per year
+        for year in timeline:
+            total = sum(timeline[year].values())
+            if total > 0:
+                for concept in timeline[year]:
+                    timeline[year][concept] /= total
+
+        result.add_trace(f"timeline built: {len(timeline)} years, filtered {filtered_count} generic concepts")
         return dict(timeline)
 
-    def _detect_drift_events(
+    def _find_core_concepts(
+        self,
+        timeline: Dict[int, Dict[str, float]],
+        result: AgentResult
+    ) -> List[str]:
+        """find concepts that appear in >50% of active years."""
+        if not timeline:
+            return []
+
+        concept_years: Dict[str, int] = defaultdict(int)
+        total_years = len(timeline)
+
+        for year_concepts in timeline.values():
+            for concept in year_concepts:
+                concept_years[concept] += 1
+
+        # concepts in >50% of years
+        threshold = total_years * 0.5
+        core = [c for c, count in concept_years.items() if count >= threshold]
+
+        # sort by frequency
+        core.sort(key=lambda c: -concept_years[c])
+
+        result.add_trace(f"found {len(core)} core concepts (appear in >50% of years)")
+        return core[:10]
+
+    def _detect_drift_events_windowed(
         self,
         timeline: Dict[int, Dict[str, float]],
         result: AgentResult
     ) -> List[DriftEvent]:
         """
-        detect significant changes in research focus.
+        detect drift using sliding windows instead of year-to-year.
 
-        compares concept distributions between adjacent time windows.
+        compares concept distributions between adjacent windows
+        using cosine similarity for smoother measurement.
         """
-        result.add_trace("detecting drift events")
+        result.add_trace(f"detecting drift events (window={self.window_size})")
 
-        if len(timeline) < 2:
+        if len(timeline) < self.window_size * 2:
+            result.add_trace("not enough years for windowed analysis")
             return []
 
         years = sorted(timeline.keys())
         drift_events = []
 
-        for i in range(1, len(years)):
-            year = years[i]
-            prev_year = years[i - 1]
+        # slide window through years
+        for i in range(self.window_size, len(years)):
+            # window 1: years[i-window_size : i]
+            # window 2: years[i : i+window_size] or remaining
 
-            # get concept sets for current and previous
-            curr_concepts = set(timeline[year].keys())
-            prev_concepts = set(timeline[prev_year].keys())
+            window1_years = years[max(0, i - self.window_size):i]
+            window2_years = years[i:min(len(years), i + self.window_size)]
 
-            # compute drift as jaccard distance
-            intersection = curr_concepts & prev_concepts
-            union = curr_concepts | prev_concepts
-
-            if not union:
+            if len(window2_years) < 2:
                 continue
 
-            jaccard_sim = len(intersection) / len(union)
-            drift = 1.0 - jaccard_sim
+            # aggregate concepts for each window
+            window1_concepts = self._aggregate_window(timeline, window1_years)
+            window2_concepts = self._aggregate_window(timeline, window2_years)
 
-            # identify entering and exiting concepts
-            entering = list(curr_concepts - prev_concepts)[:5]
-            exiting = list(prev_concepts - curr_concepts)[:5]
+            # compute cosine distance (1 - similarity)
+            drift = 1.0 - self._cosine_similarity(window1_concepts, window2_concepts)
 
             # only record significant drift
             if drift >= self.drift_threshold:
+                entering = [c for c in window2_concepts if c not in window1_concepts][:5]
+                exiting = [c for c in window1_concepts if c not in window2_concepts][:5]
+
                 event = DriftEvent(
-                    year=year,
+                    year=years[i],
                     drift_magnitude=drift,
                     concepts_entering=entering,
                     concepts_exiting=exiting,
@@ -316,6 +458,56 @@ class TrajectoryAnalyzer(Agent):
 
         result.add_trace(f"detected {len(drift_events)} drift events")
         return drift_events
+
+    def _aggregate_window(
+        self,
+        timeline: Dict[int, Dict[str, float]],
+        years: List[int]
+    ) -> Dict[str, float]:
+        """aggregate concept weights across multiple years."""
+        aggregated: Dict[str, float] = defaultdict(float)
+
+        for year in years:
+            if year in timeline:
+                for concept, weight in timeline[year].items():
+                    aggregated[concept] += weight
+
+        # normalize
+        total = sum(aggregated.values())
+        if total > 0:
+            for concept in aggregated:
+                aggregated[concept] /= total
+
+        return dict(aggregated)
+
+    def _cosine_similarity(
+        self,
+        vec1: Dict[str, float],
+        vec2: Dict[str, float]
+    ) -> float:
+        """compute cosine similarity between two concept vectors."""
+        if not vec1 or not vec2:
+            return 0.0
+
+        # get all concepts
+        all_concepts = set(vec1.keys()) | set(vec2.keys())
+
+        # compute dot product and magnitudes
+        dot_product = 0.0
+        mag1 = 0.0
+        mag2 = 0.0
+
+        for concept in all_concepts:
+            v1 = vec1.get(concept, 0.0)
+            v2 = vec2.get(concept, 0.0)
+            dot_product += v1 * v2
+            mag1 += v1 * v1
+            mag2 += v2 * v2
+
+        if mag1 == 0 or mag2 == 0:
+            return 0.0
+
+        return dot_product / (math.sqrt(mag1) * math.sqrt(mag2))
 
     def _identify_phases(
         self,
@@ -337,12 +529,15 @@ class TrajectoryAnalyzer(Agent):
         if not years:
             return []
 
-        # determine phase boundaries from drift events
+        # determine phase boundaries from novelty jumps only
         boundaries = [years[0]]
         for event in drift_events:
             if event.is_novelty_jump:
                 boundaries.append(event.year)
         boundaries.append(years[-1] + 1)
+
+        # remove duplicate boundaries
+        boundaries = sorted(set(boundaries))
 
         # create phases
         phases = []
@@ -359,13 +554,15 @@ class TrajectoryAnalyzer(Agent):
             if len(phase_papers) < self.MIN_PAPERS_FOR_PHASE:
                 continue
 
-            # compute phase characteristics
+            # compute phase characteristics with filtered concepts
             concept_counts: Dict[str, float] = defaultdict(float)
             collaborator_counts: Dict[str, int] = defaultdict(int)
 
             for p in phase_papers:
-                for c in (p.concepts or [])[:5]:
-                    concept_counts[c.get('name', '')] += c.get('score', 0.5)
+                for c in (p.concepts or [])[:7]:
+                    name = c.get('name', '')
+                    if name and self._filter_concept(name):
+                        concept_counts[name.lower()] += c.get('score', 0.5)
                 for author in (p.authors or []):
                     collaborator_counts[author] += 1
 
@@ -399,6 +596,100 @@ class TrajectoryAnalyzer(Agent):
         result.add_trace(f"identified {len(phases)} phases")
         return phases
 
+    def _merge_short_phases(
+        self,
+        phases: List[ResearchPhase],
+        papers: List[Paper],
+        result: AgentResult
+    ) -> List[ResearchPhase]:
+        """merge phases shorter than min_phase_years."""
+        if len(phases) <= 1:
+            return phases
+
+        result.add_trace(f"merging short phases (min {self.min_phase_years} years)")
+
+        merged = []
+        i = 0
+
+        while i < len(phases):
+            current = phases[i]
+
+            # if too short and not first/last, try to merge
+            if current.duration_years < self.min_phase_years:
+                # merge with next phase if possible
+                if i + 1 < len(phases):
+                    next_phase = phases[i + 1]
+                    merged_phase = self._combine_phases(current, next_phase, papers)
+                    phases[i + 1] = merged_phase
+                    i += 1
+                    continue
+                # else merge with previous if exists
+                elif merged:
+                    prev = merged.pop()
+                    merged_phase = self._combine_phases(prev, current, papers)
+                    merged.append(merged_phase)
+                    i += 1
+                    continue
+
+            merged.append(current)
+            i += 1
+
+        # renumber phases
+        for idx, phase in enumerate(merged):
+            phase.phase_id = idx
+            phase.is_formative = (idx == 0)
+            phase.is_current = (idx == len(merged) - 1)
+
+        result.add_trace(f"after merging: {len(merged)} phases")
+        return merged
+
+    def _combine_phases(
+        self,
+        phase1: ResearchPhase,
+        phase2: ResearchPhase,
+        papers: List[Paper]
+    ) -> ResearchPhase:
+        """combine two phases into one."""
+        start_year = min(phase1.start_year, phase2.start_year)
+        end_year = max(phase1.end_year, phase2.end_year)
+
+        # get all papers in combined range
+        phase_papers = [
+            p for p in papers
+            if p.year and start_year <= p.year <= end_year
+        ]
+
+        # recompute concepts
+        concept_counts: Dict[str, float] = defaultdict(float)
+        collaborator_counts: Dict[str, int] = defaultdict(int)
+
+        for p in phase_papers:
+            for c in (p.concepts or [])[:7]:
+                name = c.get('name', '')
+                if name and self._filter_concept(name):
+                    concept_counts[name.lower()] += c.get('score', 0.5)
+            for author in (p.authors or []):
+                collaborator_counts[author] += 1
+
+        top_concepts = sorted(concept_counts.keys(), key=lambda x: -concept_counts[x])[:5]
+        top_collaborators = sorted(
+            collaborator_counts.keys(),
+            key=lambda x: -collaborator_counts[x]
+        )[:5]
+
+        return ResearchPhase(
+            phase_id=0,  # will be renumbered
+            start_year=start_year,
+            end_year=end_year,
+            duration_years=end_year - start_year + 1,
+            dominant_concepts=top_concepts,
+            top_papers=phase1.top_papers + phase2.top_papers,
+            paper_count=len(phase_papers),
+            total_citations=sum(p.citation_count or 0 for p in phase_papers),
+            key_collaborators=top_collaborators,
+            label=top_concepts[0] if top_concepts else "unknown"
+        )
+
     def _classify_trajectory(
         self,
         analysis: TrajectoryAnalysis,
@@ -412,6 +703,7 @@ class TrajectoryAnalyzer(Agent):
         - explorer: high drift, many topics
         - bridger: moderate drift, connects fields
         - shifter: sudden major changes
+        - steady: consistent gradual evolution
         """
         if analysis.career_years < 5:
             return "early_career"
@@ -420,13 +712,17 @@ class TrajectoryAnalyzer(Agent):
         novelty_jumps = sum(1 for d in analysis.drift_events if d.is_novelty_jump)
         phase_count = len(analysis.phases)
 
-        if drift_per_year < 0.05 and phase_count <= 2:
+        # core concepts = focused researcher
+        core_count = len(analysis.core_concepts)
+
+        # classification logic
+        if core_count >= 3 and drift_per_year < 0.1:
             return "focused"
-        elif novelty_jumps >= 3:
+        elif novelty_jumps >= 2 and phase_count >= 3:
             return "shifter"
-        elif drift_per_year > 0.15 and phase_count >= 3:
+        elif drift_per_year > 0.2 and phase_count >= 3:
             return "explorer"
-        elif 0.05 <= drift_per_year <= 0.15 and phase_count >= 2:
+        elif 0.05 <= drift_per_year <= 0.15 and core_count >= 2:
             return "bridger"
         else:
             return "steady"
@@ -436,9 +732,11 @@ class TrajectoryAnalyzer(Agent):
         if analysis.career_years == 0:
             return 0.5
 
-        # based on inverse of drift rate
+        # based on inverse of drift rate and core concept count
         drift_rate = analysis.avg_drift_per_year
-        stability = 1.0 / (1.0 + drift_rate * 5)  # scale factor
+        core_bonus = min(len(analysis.core_concepts) * 0.1, 0.3)
+
+        stability = 1.0 / (1.0 + drift_rate * 3) + core_bonus
 
         return min(max(stability, 0.0), 1.0)
 
@@ -450,45 +748,71 @@ class TrajectoryAnalyzer(Agent):
         """
         identify emerging and declining concepts.
 
-        compares recent years to earlier years.
+        compares recent 5 years to earlier career.
         """
-        if len(timeline) < 4:
+        if len(timeline) < 6:
             return [], []
 
         years = sorted(timeline.keys())
-        mid_point = len(years) // 2
 
-        # aggregate early and late concepts
-        early_concepts: Dict[str, float] = defaultdict(float)
-        late_concepts: Dict[str, float] = defaultdict(float)
+        # recent 5 years vs earlier
+        recent_years = years[-5:]
+        early_years = years[:-5]
 
-        for year in years[:mid_point]:
-            for concept, weight in timeline[year].items():
-                early_concepts[concept] += weight
+        # aggregate concepts
+        recent_concepts = self._aggregate_window(timeline, recent_years)
+        early_concepts = self._aggregate_window(timeline, early_years)
 
-        for year in years[mid_point:]:
-            for concept, weight in timeline[year].items():
-                late_concepts[concept] += weight
-
-        # find emerging (in late, not in early or much higher)
+        # find emerging (higher in recent)
         emerging = []
-        for concept, late_weight in late_concepts.items():
+        for concept, recent_weight in recent_concepts.items():
             early_weight = early_concepts.get(concept, 0)
-            if late_weight > early_weight * 1.5 or early_weight == 0:
-                emerging.append((concept, late_weight - early_weight))
+            if recent_weight > early_weight * 1.5 or early_weight == 0:
+                emerging.append((concept, recent_weight - early_weight))
 
-        # find declining (in early, not in late or much lower)
+        # find declining (higher in early)
         declining = []
         for concept, early_weight in early_concepts.items():
-            late_weight = late_concepts.get(concept, 0)
-            if early_weight > late_weight * 1.5 or late_weight == 0:
-                declining.append((concept, early_weight - late_weight))
+            recent_weight = recent_concepts.get(concept, 0)
+            if early_weight > recent_weight * 1.5 or recent_weight == 0:
+                declining.append((concept, early_weight - recent_weight))
 
         # sort by magnitude of change
         emerging.sort(key=lambda x: -x[1])
         declining.sort(key=lambda x: -x[1])
 
         return [c[0] for c in emerging[:5]], [c[0] for c in declining[:5]]
+
+    def _fetch_employment_history(
+        self,
+        orcid: str,
+        result: AgentResult
+    ) -> List[EmploymentPeriod]:
+        """fetch employment history from ORCID."""
+        if not self.orcid_provider:
+            return []
+
+        result.add_trace(f"fetching ORCID employment for {orcid}")
+
+        try:
+            author_info = self.orcid_provider.get_author_by_orcid(orcid)
+            if not author_info:
+                return []
+
+            # ORCID affiliations don't have full details in basic API
+            # but we can create periods from available data
+            periods = []
+            for affil in (author_info.affiliations or []):
+                periods.append(EmploymentPeriod(
+                    organization=affil
+                ))
+
+            result.add_trace(f"found {len(periods)} employment periods")
+            return periods
+
+        except Exception as e:
+            result.add_warning(f"could not fetch ORCID: {e}")
+            return []
 
     def _generate_insights(
         self,
@@ -504,13 +828,19 @@ class TrajectoryAnalyzer(Agent):
             f"({analysis.career_start}-{analysis.career_end}), with {analysis.total_papers} papers."
         )
 
+        # core concepts
+        if analysis.core_concepts:
+            analysis.add_insight(
+                f"Core research themes: {', '.join(analysis.core_concepts[:3])}"
+            )
+
         # trajectory type
         type_descriptions = {
             "focused": "maintains a focused research program with consistent themes",
             "explorer": "explores diverse topics, frequently venturing into new areas",
             "bridger": "connects different research areas, bridging disciplines",
             "shifter": "has made significant pivots in research direction",
-            "steady": "follows a steady research trajectory",
+            "steady": "follows a steady research trajectory with gradual evolution",
             "early_career": "is early in their career, trajectory still forming"
         }
         analysis.add_insight(
@@ -547,7 +877,7 @@ class TrajectoryAnalyzer(Agent):
         # reference concepts (if provided)
         if reference_concepts:
             # check how the author's work relates to reference concepts
-            author_concepts = set()
+            author_concepts = set(analysis.core_concepts)
             for phase in analysis.phases:
                 author_concepts.update(c.lower() for c in phase.dominant_concepts)
 

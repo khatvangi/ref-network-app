@@ -77,7 +77,7 @@ def test_corpus_fetcher():
 def test_trajectory_analyzer(corpus):
     """test TrajectoryAnalyzer with corpus from previous test."""
     print("\n" + "=" * 60)
-    print("TEST: TrajectoryAnalyzer")
+    print("TEST: TrajectoryAnalyzer (v2 - tuned)")
     print("=" * 60)
 
     if not corpus:
@@ -86,7 +86,11 @@ def test_trajectory_analyzer(corpus):
 
     print(f"\n1. Analyzing trajectory for {corpus.name} ({len(corpus.papers)} papers)")
 
-    analyzer = TrajectoryAnalyzer()
+    # optionally test with ORCID provider
+    from refnet.providers.base import ORCIDProvider
+    orcid_provider = ORCIDProvider()
+
+    analyzer = TrajectoryAnalyzer(orcid_provider=orcid_provider)
     # TrajectoryAnalyzer expects the full AuthorCorpus object
     result = analyzer.run(corpus=corpus)
 
@@ -103,8 +107,10 @@ def test_trajectory_analyzer(corpus):
         traj = result.data
         print(f"\n3. Trajectory Analysis:")
         print(f"   Type: {traj.trajectory_type}")
+        print(f"   Stability: {traj.stability_score:.2f}")
         print(f"   Phases: {len(traj.phases)}")
         print(f"   Drift events: {len(traj.drift_events)}")
+        print(f"   Core concepts: {traj.core_concepts[:5]}")
 
         if traj.phases:
             print(f"\n4. Research Phases:")
