@@ -255,7 +255,7 @@ class ExpansionEngine:
         stats: ExpansionStats
     ):
         """expand a single paper (refs + cites + authors)."""
-        print(f"[expansion] expanding: {paper.title[:50]}...")
+        print(f"[expansion] expanding: {(paper.title or 'Untitled')[:50]}...")
 
         # check hub status (but always expand seeds)
         is_seed = paper.status == PaperStatus.SEED
@@ -263,7 +263,7 @@ class ExpansionEngine:
         limits = self.hub_detector.get_expansion_limits(paper)
 
         if hub_analysis.suppress_expansion and not is_seed:
-            print(f"[expansion] hub suppressed: {paper.title[:30]} ({hub_analysis.suppress_reason})")
+            print(f"[expansion] hub suppressed: {(paper.title or '?')[:30]} ({hub_analysis.suppress_reason})")
             stats.hubs_suppressed += 1
             paper.is_methodology = hub_analysis.is_hub
             paper.status = PaperStatus.EXPANDED
@@ -271,12 +271,12 @@ class ExpansionEngine:
 
         if hub_analysis.is_hub and is_seed:
             # reduce limits for hub seeds but still expand
-            print(f"[expansion] hub seed (reduced limits): {paper.title[:30]}")
+            print(f"[expansion] hub seed (reduced limits): {(paper.title or '?')[:30]}")
             limits = {"max_refs": 20, "max_cites": 10, "max_author_works": 5}
 
         paper_id = paper.doi or paper.openalex_id
         if not paper_id:
-            logger.warning(f"[expansion] no id for paper: {paper.title[:30]}")
+            logger.warning(f"[expansion] no id for paper: {(paper.title or '?')[:30]}")
             stats.papers_failed += 1
             return
 
@@ -325,7 +325,7 @@ class ExpansionEngine:
             except KeyboardInterrupt:
                 raise
             except Exception as e:
-                logger.warning(f"[expansion] refs failed for {paper.title[:30]}: {e}")
+                logger.warning(f"[expansion] refs failed for {(paper.title or '?')[:30]}: {e}")
                 stats.errors += 1
 
         # 2. forward citations (what cites this paper)
@@ -352,7 +352,7 @@ class ExpansionEngine:
             except KeyboardInterrupt:
                 raise
             except Exception as e:
-                logger.warning(f"[expansion] cites failed for {paper.title[:30]}: {e}")
+                logger.warning(f"[expansion] cites failed for {(paper.title or '?')[:30]}: {e}")
                 stats.errors += 1
 
         # 3. author expansion
@@ -396,7 +396,7 @@ class ExpansionEngine:
             except KeyboardInterrupt:
                 raise
             except Exception as e:
-                logger.warning(f"[expansion] author layer failed for {paper.title[:30]}: {e}")
+                logger.warning(f"[expansion] author layer failed for {(paper.title or '?')[:30]}: {e}")
                 stats.errors += 1
 
         paper.status = PaperStatus.EXPANDED
@@ -1030,6 +1030,10 @@ class ExpansionEngine:
         score = 0.0
         topic_lower = topic.lower()
         topic_words = set(topic_lower.split())
+
+        # no usable topic words - treat as neutral relevance
+        if not topic_words:
+            return 0.5
 
         # title match (most important)
         if paper.title:

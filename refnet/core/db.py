@@ -308,16 +308,20 @@ class CandidateDB:
     def get_top_candidates(self, limit: int = 100,
                            by: str = "priority_score") -> List[Paper]:
         """get top candidate papers by score."""
-        valid_columns = ["priority_score", "materialization_score",
-                         "relevance_score", "bridge_score"]
-        if by not in valid_columns:
-            by = "priority_score"
+        # whitelist mapping to prevent sql injection
+        allowed_columns = {
+            "priority_score": "priority_score",
+            "materialization_score": "materialization_score",
+            "relevance_score": "relevance_score",
+            "bridge_score": "bridge_score",
+        }
+        order_col = allowed_columns.get(by, "priority_score")
 
         with self._conn() as conn:
             rows = conn.execute(f"""
                 SELECT * FROM paper_candidates
                 WHERE status = 'candidate'
-                ORDER BY {by} DESC
+                ORDER BY {order_col} DESC
                 LIMIT ?
             """, (limit,)).fetchall()
             return [self._row_to_paper(r) for r in rows]
@@ -433,14 +437,18 @@ class CandidateDB:
     def get_top_authors(self, limit: int = 50,
                         by: str = "centrality") -> List[Author]:
         """get top authors by score."""
-        valid = ["centrality", "topic_fit", "priority"]
-        if by not in valid:
-            by = "centrality"
+        # whitelist mapping to prevent sql injection
+        allowed_columns = {
+            "centrality": "centrality",
+            "topic_fit": "topic_fit",
+            "priority": "priority",
+        }
+        order_col = allowed_columns.get(by, "centrality")
 
         with self._conn() as conn:
             rows = conn.execute(f"""
                 SELECT * FROM author_candidates
-                ORDER BY {by} DESC
+                ORDER BY {order_col} DESC
                 LIMIT ?
             """, (limit,)).fetchall()
             return [self._row_to_author(r) for r in rows]

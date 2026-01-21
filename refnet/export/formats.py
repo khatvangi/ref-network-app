@@ -279,8 +279,8 @@ class GraphExporter:
                 source_paper = graph.papers.get(edge.source_id)
                 target_paper = graph.papers.get(edge.target_id)
 
-                source_label = (source_paper.title[:30] + "...") if source_paper else edge.source_id
-                target_label = (target_paper.title[:30] + "...") if target_paper else edge.target_id
+                source_label = ((source_paper.title or '?')[:30] + "...") if source_paper else edge.source_id
+                target_label = ((target_paper.title or '?')[:30] + "...") if target_paper else edge.target_id
 
                 # color by edge type
                 color = self._edge_type_color(edge.edge_type)

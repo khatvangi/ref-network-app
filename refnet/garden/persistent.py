@@ -234,7 +234,7 @@ class Garden:
             self._merge_paper(c, existing, paper)
             conn.commit()
             conn.close()
-            logger.debug(f"[garden] merged paper: {paper.title[:40]}")
+            logger.debug(f"[garden] merged paper: {(paper.title or '?')[:40]}")
             return False
 
         # insert new
@@ -271,7 +271,7 @@ class Garden:
         conn.commit()
         conn.close()
 
-        logger.info(f"[garden] planted paper: {paper.title[:40]}")
+        logger.info(f"[garden] planted paper: {(paper.title or 'Untitled')[:40]}")
         return True
 
     def plant_author(self, author: Author, is_seed: bool = True) -> bool:

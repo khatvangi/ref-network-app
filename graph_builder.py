@@ -219,7 +219,7 @@ class GraphBuilder:
             if node.expanded:
                 continue
             if node_degree.get(cid, 0) >= self.config.degree_cap:
-                print(f"[build] skipping hub: {node.paper.title[:40]}...")
+                print(f"[build] skipping hub: {(node.paper.title or '?')[:40]}...")
                 continue
             if node.depth >= self.config.max_depth:
                 continue
@@ -227,7 +227,7 @@ class GraphBuilder:
             # expand this node
             node.expanded = True
             result.expanded_count += 1
-            print(f"[build] expanding ({result.expanded_count}): {node.paper.title[:50]}...")
+            print(f"[build] expanding ({result.expanded_count}): {(node.paper.title or 'Untitled')[:50]}...")
 
             # fetch backward citations (references)
             refs = self._fetch_references(node.paper)

@@ -6,6 +6,7 @@ https://docs.openalex.org/
 import httpx
 import time
 import logging
+import threading
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
@@ -31,6 +32,7 @@ class OpenAlexProvider(PaperProvider):
         self._session = None  # lazy init
         self._last_request = 0
         self._min_delay = 0.1  # 10 req/sec polite
+        self._rate_lock = threading.Lock()  # thread-safe rate limiting
 
         # resilience components
         self._resilient = ResilientAPIClient(
@@ -67,8 +69,17 @@ class OpenAlexProvider(PaperProvider):
             self._session.close()
             self._session = None
 
+    def __enter__(self):
+        """context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """context manager exit - ensures cleanup."""
+        self.close()
+        return False
+
     def __del__(self):
-        """cleanup on garbage collection."""
+        """cleanup on garbage collection (fallback)."""
         self.close()
 
     @property
@@ -77,10 +88,12 @@ class OpenAlexProvider(PaperProvider):
 
     def _request(self, endpoint: str, params: Optional[Dict] = None) -> Optional[Dict]:
         """make rate-limited request with retry and circuit breaker."""
-        # rate limiting
-        elapsed = time.time() - self._last_request
-        if elapsed < self._min_delay:
-            time.sleep(self._min_delay - elapsed)
+        # thread-safe rate limiting
+        with self._rate_lock:
+            elapsed = time.time() - self._last_request
+            if elapsed < self._min_delay:
+                time.sleep(self._min_delay - elapsed)
+            self._last_request = time.time()
 
         if params is None:
             params = {}
@@ -90,7 +103,6 @@ class OpenAlexProvider(PaperProvider):
 
         def do_request():
             resp = self.session.get(url, params=params)
-            self._last_request = time.time()
 
             if resp.status_code == 200:
                 return resp.json()

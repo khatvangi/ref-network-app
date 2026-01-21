@@ -7,6 +7,7 @@ import httpx
 import time
 import os
 import logging
+import threading
 from typing import List, Optional, Dict, Any
 
 from .base import PaperProvider, AuthorInfo
@@ -31,6 +32,7 @@ class SemanticScholarProvider(PaperProvider):
         self._last_request = 0
         # with key: 100 req/sec, without: 100 req/5 min
         self._min_delay = 0.01 if self.api_key else 3.0
+        self._rate_lock = threading.Lock()  # thread-safe rate limiting
 
         # resilience components
         self._resilient = ResilientAPIClient(
@@ -67,8 +69,17 @@ class SemanticScholarProvider(PaperProvider):
             self._session.close()
             self._session = None
 
+    def __enter__(self):
+        """context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """context manager exit - ensures cleanup."""
+        self.close()
+        return False
+
     def __del__(self):
-        """cleanup on garbage collection."""
+        """cleanup on garbage collection (fallback)."""
         self.close()
 
     @property
@@ -78,10 +89,12 @@ class SemanticScholarProvider(PaperProvider):
     def _request(self, endpoint: str, params: Optional[Dict] = None,
                  method: str = "GET") -> Optional[Dict]:
         """make rate-limited request with retry and circuit breaker."""
-        # rate limiting
-        elapsed = time.time() - self._last_request
-        if elapsed < self._min_delay:
-            time.sleep(self._min_delay - elapsed)
+        # thread-safe rate limiting
+        with self._rate_lock:
+            elapsed = time.time() - self._last_request
+            if elapsed < self._min_delay:
+                time.sleep(self._min_delay - elapsed)
+            self._last_request = time.time()
 
         headers = {}
         if self.api_key:
@@ -94,8 +107,6 @@ class SemanticScholarProvider(PaperProvider):
                 resp = self.session.get(url, params=params, headers=headers)
             else:
                 resp = self.session.post(url, json=params, headers=headers)
-
-            self._last_request = time.time()
 
             if resp.status_code == 200:
                 return resp.json()

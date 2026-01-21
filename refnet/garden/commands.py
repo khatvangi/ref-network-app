@@ -43,7 +43,7 @@ def cmd_plant(args):
                 paper.status = PaperStatus.SEED
                 if garden.plant_paper(paper, is_seed=True):
                     planted += 1
-                    print(f"  ✓ {paper.title[:50]}")
+                    print(f"  ✓ {(paper.title or 'Untitled')[:50]}")
 
                     # also plant primary authors
                     if paper.author_ids and paper.authors:
@@ -144,7 +144,7 @@ def cmd_grow(args):
         if not paper_id:
             continue
 
-        print(f"  Expanding: {paper.title[:40]}...")
+        print(f"  Expanding: {(paper.title or '?')[:40]}...")
 
         # backward refs
         try:
