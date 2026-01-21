@@ -93,7 +93,7 @@ class GoogleScholarProvider(PaperProvider):
                 year_match = re.search(r'\b(19|20)\d{2}\b', summary)
                 if year_match:
                     year = int(year_match.group())
-            except:
+            except (ValueError, TypeError, AttributeError):
                 pass
 
             authors = []
@@ -133,7 +133,7 @@ class GoogleScholarProvider(PaperProvider):
                 year_match = re.search(r'\b(19|20)\d{2}\b', content)
                 if year_match:
                     year = int(year_match.group())
-            except:
+            except (ValueError, TypeError, AttributeError):
                 pass
 
             return Paper(
@@ -161,7 +161,7 @@ class GoogleScholarProvider(PaperProvider):
             if bib.get('pub_year'):
                 try:
                     year = int(bib.get('pub_year'))
-                except:
+                except (ValueError, TypeError):
                     pass
 
             venue = bib.get('venue', '') or bib.get('journal', '')
@@ -492,7 +492,8 @@ class GoogleScholarProvider(PaperProvider):
 
                     papers.append(paper)
                     self._call_count += 1
-                except:
+                except Exception as e:
+                    logger.debug(f"failed to parse publication: {e}")
                     continue
 
             return papers

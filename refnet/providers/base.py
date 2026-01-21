@@ -239,7 +239,7 @@ class ORCIDProvider:
             if pub_date and pub_date.get("year"):
                 try:
                     year = int(pub_date["year"]["value"])
-                except:
+                except (ValueError, TypeError, KeyError):
                     pass
 
             works.append({

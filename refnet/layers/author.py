@@ -3,10 +3,13 @@ author layer - identity resolution, expansion, and scoring.
 implements scientist-centric discovery via author works.
 """
 
+import logging
 from typing import List, Optional, Dict, Any, Set, Tuple
 from dataclasses import dataclass
 
 from ..core.models import Paper, Author, AuthorStatus, PaperStatus, EdgeType
+
+logger = logging.getLogger("refnet.author")
 from ..core.config import AuthorConfig, RefnetConfig
 from ..providers.base import PaperProvider, AuthorInfo, ORCIDProvider
 from ..graph.candidate_pool import CandidatePool
@@ -173,6 +176,10 @@ class AuthorLayer:
             if author:
                 # check for mega-author
                 if self._is_mega_author(author) and self.config.skip_mega_unless_central:
+                    logger.info(
+                        f"[author] skipping mega-author: {author.name} "
+                        f"({author.paper_count} papers > {self.config.mega_author_threshold} threshold)"
+                    )
                     continue
 
                 if author.id not in existing:
@@ -363,6 +370,8 @@ class AuthorLayer:
             openalex_id=info.openalex_id,
             s2_id=info.s2_id,
             affiliations=info.affiliations or [],
+            paper_count=info.paper_count or 0,
+            citation_count=info.citation_count or 0,
             status=AuthorStatus.CANDIDATE
         )
 
@@ -412,8 +421,12 @@ class AuthorLayer:
         return False
 
     def _is_mega_author(self, author: Author) -> bool:
-        """check if author is a mega-author (too many papers)."""
-        # we'd need paper count from provider
-        # for now, just check if we have the info
-        # this would be set during resolution
-        return False  # TODO: implement based on paper_count
+        """
+        check if author is a mega-author (too many papers).
+        mega-authors (500+ papers) would explode the graph if fully expanded.
+        examples: statisticians, bioinformaticians with many collaborations.
+        """
+        if author.paper_count <= 0:
+            # no data available, assume not mega
+            return False
+        return author.paper_count >= self.config.mega_author_threshold

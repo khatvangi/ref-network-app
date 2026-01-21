@@ -63,7 +63,7 @@ def load_from_json(
         if year:
             try:
                 year = int(year)
-            except:
+            except (ValueError, TypeError):
                 year = None
 
         # parse authors
@@ -146,7 +146,7 @@ def load_from_csv(
         if year_column and row.get(year_column):
             try:
                 year = int(row[year_column])
-            except:
+            except (ValueError, TypeError):
                 pass
 
         authors = []

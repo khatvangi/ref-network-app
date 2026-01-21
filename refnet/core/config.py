@@ -159,6 +159,14 @@ class ExpansionConfig:
     # aggressiveness presets
     aggressiveness: AggressivenessLevel = AggressivenessLevel.MEDIUM
 
+    # bucket expansion settings (citation walking)
+    bucket_mode_enabled: bool = False  # enable bucket-based expansion
+    base_max_generations: int = 10     # starting max generations (adaptive)
+    min_bucket_relevance: float = 0.15 # minimum bucket avg relevance to continue branch
+    drift_window: int = 30             # papers to consider for topic drift
+    drift_kill_threshold: float = 0.10 # stop if <10% of recent papers are relevant
+    min_relevance: float = 0.15        # minimum relevance to include paper in bucket
+
     def get_fetch_multiplier(self) -> float:
         """multiplier for fetch limits based on aggressiveness."""
         if self.aggressiveness == AggressivenessLevel.LOW:

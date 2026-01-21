@@ -549,17 +549,33 @@ def run_modern_pipeline(args, seeds):
     graph = WorkingGraph(config.working_graph)
 
     # run expansion engine (the correct way)
-    print(f"\n--- BUILDING GRAPH (modern pipeline) ---")
-    print(f"Seeds: {len(seeds_with_doi)}, Max nodes: {max_nodes}, Depth: {config.expansion.max_depth}")
+    bucket_mode = getattr(args, 'bucket_mode', False)
+    mode_name = "bucket expansion" if bucket_mode else "depth-based"
+
+    print(f"\n--- BUILDING GRAPH ({mode_name}) ---")
+    print(f"Seeds: {len(seeds_with_doi)}, Max nodes: {max_nodes}")
+    if bucket_mode:
+        print(f"Bucket mode: adaptive depth, relevance decay stopping")
+        print(f"  base_max_generations: {config.expansion.base_max_generations}")
+        print(f"  min_bucket_relevance: {config.expansion.min_bucket_relevance}")
+        print(f"  drift_kill_threshold: {config.expansion.drift_kill_threshold}")
+    else:
+        print(f"Depth: {config.expansion.max_depth}")
     print(f"Author expansion: {'ON' if config.author.enabled else 'OFF'}")
     print(f"Trajectory analysis: {'ON' if config.trajectory.enabled else 'OFF'}")
 
     # ExpansionEngine takes (provider, config) - not pool/graph
     engine = ExpansionEngine(provider, config)
 
-    # build() takes seeds and returns a job with results
+    # build() or build_with_buckets() based on mode
     topic = getattr(args, 'topic', None) or (args.inputs[0] if hasattr(args, 'inputs') and args.inputs else None)
-    job = engine.build(seeds_with_doi, topic=topic, pool=pool, graph=graph)
+
+    if bucket_mode:
+        # use bucket-based expansion (citation walking until exhaustion)
+        job = engine.build_with_buckets(seeds_with_doi, topic=topic, pool=pool, graph=graph)
+    else:
+        # use traditional depth-based expansion
+        job = engine.build(seeds_with_doi, topic=topic, pool=pool, graph=graph)
 
     # export results
     print(f"\n--- EXPORTING ---")
@@ -617,6 +633,8 @@ if __name__ == "__main__":
         parser.add_argument('--seed-limit', type=int, default=30, help='max seeds from collection')
         parser.add_argument('--modern', action='store_true')
         parser.add_argument('--all-layers', action='store_true')
+        parser.add_argument('--bucket-mode', action='store_true',
+                            help='use bucket expansion (citation walking until exhaustion)')
         args = parser.parse_args()
 
         # collect seeds based on input

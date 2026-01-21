@@ -154,6 +154,10 @@ class CandidatePool:
         """get all outgoing edges with full data (target, type, weight, confidence)."""
         return self.db.get_edges_from(paper_id)
 
+    def get_edges_to_with_weight(self, paper_id: str) -> List[tuple]:
+        """get all incoming edges with full data (source, type, weight, confidence)."""
+        return self.db.get_edges_to(paper_id)
+
     def prune_if_needed(self):
         """prune low-scoring candidates if pool is too large."""
         total = self.db.count_papers()
@@ -231,6 +235,15 @@ class CandidatePool:
                                    new.citation_count > existing.citation_count):
             existing.citation_count = new.citation_count
             updated = True
+
+        # update discovery metadata if new path is shorter (better discovery chain)
+        # depth 0 = seed, so lower depth = closer to seed = more relevant path
+        if new.depth is not None:
+            if existing.depth is None or new.depth < existing.depth:
+                existing.depth = new.depth
+                existing.discovered_from = new.discovered_from
+                existing.discovered_channel = new.discovered_channel
+                updated = True
 
         # if updated, we could persist - for now just return existing
         return existing

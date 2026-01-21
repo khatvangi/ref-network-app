@@ -61,20 +61,49 @@ class HTMLViewer:
             if paper:
                 cluster = graph.node_cluster_map.get(node_id, "other")
 
+                # get authors for hover display
+                authors_str = "Unknown"
+                if paper.authors:
+                    authors_str = ", ".join(paper.authors[:3])
+                    if len(paper.authors) > 3:
+                        authors_str += f" +{len(paper.authors) - 3} more"
+
                 nodes.append({
                     "data": {
                         "id": node_id,
                         "label": self._truncate(paper.title, 30),
                         "title": paper.title,
+                        "authors": authors_str,
                         "year": paper.year or 0,
                         "citations": paper.citation_count or 0,
                         "relevance": round(paper.relevance_score, 2),
                         "cluster": cluster,
                         "is_seed": node.is_seed,
                         "is_review": paper.is_review,
-                        "doi": paper.doi or ""
+                        "doi": paper.doi or "",
+                        "node_type": "paper"
                     }
                 })
+            else:
+                # check if it's an author node
+                author = graph.authors.get(node_id)
+                if author:
+                    nodes.append({
+                        "data": {
+                            "id": node_id,
+                            "label": self._truncate(author.name, 20) if author.name else "Author",
+                            "title": author.name or "Unknown Author",
+                            "authors": "",
+                            "year": 0,
+                            "citations": author.paper_count or 0,
+                            "relevance": 0.5,
+                            "cluster": "authors",
+                            "is_seed": False,
+                            "is_review": False,
+                            "doi": "",
+                            "node_type": "author"
+                        }
+                    })
 
         # edges
         for edge in graph.edges.values():
@@ -186,9 +215,68 @@ class HTMLViewer:
             font-size: 12px;
             color: #ccc;
         }}
+
+        /* hover tooltip */
+        #tooltip {{
+            position: absolute;
+            display: none;
+            background: rgba(26, 26, 46, 0.95);
+            border: 1px solid #4ecdc4;
+            border-radius: 8px;
+            padding: 12px 15px;
+            max-width: 350px;
+            z-index: 1000;
+            pointer-events: none;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+        }}
+        #tooltip .tooltip-title {{
+            font-size: 13px;
+            font-weight: 600;
+            color: #fff;
+            margin-bottom: 8px;
+            line-height: 1.4;
+        }}
+        #tooltip .tooltip-authors {{
+            font-size: 11px;
+            color: #4ecdc4;
+            margin-bottom: 4px;
+            font-style: italic;
+        }}
+        #tooltip .tooltip-meta {{
+            font-size: 11px;
+            color: #888;
+        }}
+        #tooltip .tooltip-meta span {{
+            margin-right: 10px;
+        }}
+        #tooltip .seed-badge {{
+            display: inline-block;
+            background: #ff6b6b;
+            color: white;
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 3px;
+            margin-left: 5px;
+        }}
+        #tooltip .review-badge {{
+            display: inline-block;
+            background: #f1c40f;
+            color: #1a1a2e;
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 3px;
+            margin-left: 5px;
+        }}
     </style>
 </head>
 <body>
+    <!-- hover tooltip -->
+    <div id="tooltip">
+        <div class="tooltip-title"></div>
+        <div class="tooltip-authors"></div>
+        <div class="tooltip-meta"></div>
+    </div>
+
     <div id="container">
         <div id="sidebar">
             <h1>📚 {title}</h1>
@@ -405,6 +493,61 @@ class HTMLViewer:
             if (evt.target === cy) {{
                 document.getElementById('node-info').style.display = 'none';
                 cy.elements().removeClass('highlighted dimmed');
+            }}
+        }});
+
+        // tooltip element
+        const tooltip = document.getElementById('tooltip');
+
+        // node hover - show tooltip
+        cy.on('mouseover', 'node', function(evt) {{
+            const node = evt.target;
+            const data = node.data();
+
+            // build tooltip content
+            let titleHtml = data.title || 'Unknown';
+            if (data.is_seed) {{
+                titleHtml += '<span class="seed-badge">SEED</span>';
+            }}
+            if (data.is_review) {{
+                titleHtml += '<span class="review-badge">REVIEW</span>';
+            }}
+
+            tooltip.querySelector('.tooltip-title').innerHTML = titleHtml;
+            tooltip.querySelector('.tooltip-authors').textContent = data.authors || 'Unknown authors';
+
+            let metaHtml = '';
+            if (data.year) metaHtml += `<span>📅 ${{data.year}}</span>`;
+            if (data.citations) metaHtml += `<span>📚 ${{data.citations}} citations</span>`;
+            if (data.relevance) metaHtml += `<span>⭐ ${{data.relevance}} rel</span>`;
+            tooltip.querySelector('.tooltip-meta').innerHTML = metaHtml;
+
+            tooltip.style.display = 'block';
+        }});
+
+        // node hover - hide tooltip
+        cy.on('mouseout', 'node', function() {{
+            tooltip.style.display = 'none';
+        }});
+
+        // track mouse position for tooltip
+        document.getElementById('cy').addEventListener('mousemove', function(evt) {{
+            if (tooltip.style.display === 'block') {{
+                // position tooltip near cursor but ensure it stays on screen
+                let x = evt.clientX + 15;
+                let y = evt.clientY + 15;
+
+                // prevent tooltip from going off right edge
+                if (x + tooltip.offsetWidth > window.innerWidth) {{
+                    x = evt.clientX - tooltip.offsetWidth - 15;
+                }}
+                // prevent tooltip from going off bottom edge
+                if (y + tooltip.offsetHeight > window.innerHeight) {{
+                    y = evt.clientY - tooltip.offsetHeight - 15;
+                }}
+
+                tooltip.style.left = x + 'px';
+                tooltip.style.top = y + 'px';
             }}
         }});
     </script>

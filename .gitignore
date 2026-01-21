@@ -38,3 +38,12 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+
+# data files (not code)
+*.pdf
+*.png
+*.jpg
+*.jsonl
+*.json
+aars_merged/
+aars_knowledge_map/

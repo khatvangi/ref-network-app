@@ -64,7 +64,7 @@ def load_seeds_from_bibtex(path: str, provider) -> list:
             year = None
             try:
                 year = int(entry.get('year', ''))
-            except:
+            except (ValueError, TypeError):
                 pass
 
             if doi:

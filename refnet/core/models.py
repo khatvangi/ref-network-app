@@ -343,3 +343,83 @@ class GapCandidate:
     def __post_init__(self):
         if not self.id:
             self.id = str(uuid.uuid4())
+
+
+@dataclass
+class Bucket:
+    """
+    a bucket of papers for citation walking (dendrimer model).
+    each paper creates its OWN child bucket, forming a tree structure.
+    branches can be pruned independently based on relevance decay.
+    """
+    id: str = ""
+    generation: int = 0  # 0 = seed bucket, 1 = first expansion, etc.
+    papers: List[Paper] = field(default_factory=list)
+
+    # dendrimer structure - track WHICH paper created this bucket
+    source_paper_id: Optional[str] = None  # the paper that spawned this bucket
+    source_paper_title: Optional[str] = None  # for debugging/visualization
+    parent_bucket_id: Optional[str] = None  # parent bucket for lineage tracking
+    child_bucket_ids: List[str] = field(default_factory=list)  # children for tree traversal
+
+    avg_relevance: float = 0.0  # average relevance of papers in bucket
+    is_alive: bool = True  # false if pruned due to relevance decay
+    created_at: datetime = field(default_factory=datetime.now)
+
+    # tracking
+    total_refs_fetched: int = 0
+    total_cites_fetched: int = 0
+
+    def __post_init__(self):
+        if not self.id:
+            self.id = f"bucket_{self.generation}_{str(uuid.uuid4())[:8]}"
+
+    def compute_avg_relevance(self):
+        """compute average relevance of papers in bucket."""
+        if not self.papers:
+            self.avg_relevance = 0.0
+        else:
+            self.avg_relevance = sum(
+                p.relevance_score or 0.0 for p in self.papers
+            ) / len(self.papers)
+
+    def prune(self, reason: str = "relevance_decay"):
+        """mark this bucket as pruned (dead branch)."""
+        self.is_alive = False
+
+
+@dataclass
+class BucketExpansionState:
+    """
+    state for bucket-based citation walking (dendrimer model).
+    tracks all buckets as a tree structure and global stopping conditions.
+    """
+    all_buckets: Dict[str, Bucket] = field(default_factory=dict)
+    root_bucket_id: Optional[str] = None  # the initial seed bucket
+    seen_paper_ids: Set[str] = field(default_factory=set)
+    relevance_history: List[float] = field(default_factory=list)  # rolling window
+    current_generation: int = 0
+    total_papers_discovered: int = 0
+    total_api_calls: int = 0
+    topic: Optional[str] = None
+
+    # dendrimer stats
+    active_branches: int = 0  # buckets still alive
+    pruned_branches: int = 0  # buckets killed due to relevance decay
+    total_buckets_created: int = 0
+
+    # adaptive depth
+    max_generations: int = 10
+
+    # stopping flags
+    stopped_reason: Optional[str] = None
+    is_exhausted: bool = False
+
+    def get_alive_buckets_at_generation(self, gen: int) -> List[Bucket]:
+        """get all alive (not pruned) buckets at a specific generation."""
+        return [b for b in self.all_buckets.values()
+                if b.generation == gen and b.is_alive]
+
+    def count_alive_branches(self) -> int:
+        """count total alive branches (buckets with is_alive=True)."""
+        return sum(1 for b in self.all_buckets.values() if b.is_alive)
