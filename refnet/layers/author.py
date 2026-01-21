@@ -296,8 +296,10 @@ class AuthorLayer:
         # get author's papers in the graph
         author_papers = []
         for paper_id, paper in graph.papers.items():
-            if author.openalex_id in paper.author_ids or \
-               author.s2_id in paper.author_ids:
+            # defensive check: author_ids may be None for papers loaded from DB
+            paper_author_ids = paper.author_ids or []
+            if author.openalex_id in paper_author_ids or \
+               author.s2_id in paper_author_ids:
                 author_papers.append(paper)
 
         if not author_papers:
@@ -323,8 +325,10 @@ class AuthorLayer:
         # count papers and connections
         author_paper_ids = []
         for paper_id, paper in graph.papers.items():
-            if author.openalex_id in paper.author_ids or \
-               author.s2_id in paper.author_ids:
+            # defensive check: author_ids may be None for papers loaded from DB
+            paper_author_ids = paper.author_ids or []
+            if author.openalex_id in paper_author_ids or \
+               author.s2_id in paper_author_ids:
                 author_paper_ids.append(paper_id)
 
         if not author_paper_ids:

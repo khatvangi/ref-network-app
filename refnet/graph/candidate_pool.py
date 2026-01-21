@@ -216,25 +216,26 @@ class CandidatePool:
         return None
 
     def _merge_if_better(self, existing: Paper, new: Paper) -> Paper:
-        """merge new paper data into existing if better."""
-        updated = False
+        """merge new paper data into existing if better, persisting changes to db."""
+        # track what needs to be updated in the database
+        db_updates = {}
 
         # fill in missing ids
         if not existing.doi and new.doi:
             existing.doi = new.doi
-            updated = True
+            db_updates['doi'] = new.doi
         if not existing.openalex_id and new.openalex_id:
             existing.openalex_id = new.openalex_id
-            updated = True
+            db_updates['openalex_id'] = new.openalex_id
         if not existing.s2_id and new.s2_id:
             existing.s2_id = new.s2_id
-            updated = True
+            db_updates['s2_id'] = new.s2_id
 
         # update citation count if higher
         if new.citation_count and (not existing.citation_count or
                                    new.citation_count > existing.citation_count):
             existing.citation_count = new.citation_count
-            updated = True
+            db_updates['citation_count'] = new.citation_count
 
         # update discovery metadata if new path is shorter (better discovery chain)
         # depth 0 = seed, so lower depth = closer to seed = more relevant path
@@ -243,9 +244,14 @@ class CandidatePool:
                 existing.depth = new.depth
                 existing.discovered_from = new.discovered_from
                 existing.discovered_channel = new.discovered_channel
-                updated = True
+                db_updates['depth'] = new.depth
+                db_updates['discovered_from'] = new.discovered_from
+                db_updates['discovered_channel'] = new.discovered_channel
 
-        # if updated, we could persist - for now just return existing
+        # persist changes to database if any updates were made
+        if db_updates:
+            self.db.update_paper_metadata(existing.id, **db_updates)
+
         return existing
 
     def _normalize_doi(self, doi: str) -> str:

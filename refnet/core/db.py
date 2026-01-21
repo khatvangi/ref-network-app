@@ -259,6 +259,52 @@ class CandidateDB:
                 (status.value, paper_id)
             )
 
+    def update_paper_metadata(self, paper_id: str,
+                              doi: Optional[str] = None,
+                              openalex_id: Optional[str] = None,
+                              s2_id: Optional[str] = None,
+                              citation_count: Optional[int] = None,
+                              depth: Optional[int] = None,
+                              discovered_from: Optional[str] = None,
+                              discovered_channel: Optional[str] = None):
+        """
+        update paper metadata fields that may improve during merge.
+        only updates fields that are explicitly passed (not None).
+        """
+        updates = []
+        values = []
+        if doi is not None:
+            updates.append("doi = ?")
+            values.append(doi)
+        if openalex_id is not None:
+            updates.append("openalex_id = ?")
+            values.append(openalex_id)
+        if s2_id is not None:
+            updates.append("s2_id = ?")
+            values.append(s2_id)
+        if citation_count is not None:
+            updates.append("citation_count = ?")
+            values.append(citation_count)
+        if depth is not None:
+            updates.append("depth = ?")
+            values.append(depth)
+        if discovered_from is not None:
+            updates.append("discovered_from = ?")
+            values.append(discovered_from)
+        if discovered_channel is not None:
+            updates.append("discovered_channel = ?")
+            values.append(discovered_channel)
+
+        if not updates:
+            return
+
+        values.append(paper_id)
+        with self._conn() as conn:
+            conn.execute(
+                f"UPDATE paper_candidates SET {', '.join(updates)} WHERE id = ?",
+                values
+            )
+
     def get_top_candidates(self, limit: int = 100,
                            by: str = "priority_score") -> List[Paper]:
         """get top candidate papers by score."""
