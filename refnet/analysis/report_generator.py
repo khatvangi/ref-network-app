@@ -399,19 +399,25 @@ class ReportGenerator:
         conn = sqlite3.connect(str(self.db_path))
         c = conn.cursor()
 
-        # check if we have author data
+        # check if we have author data - try multiple sources
         c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='authors'")
         has_authors_table = c.fetchone() is not None
+
+        # check for authors_json column (from enrich_authors script)
+        c.execute("SELECT COUNT(*) FROM paper_candidates WHERE authors_json IS NOT NULL AND authors_json != '[]'")
+        has_authors_json = (c.fetchone()[0] or 0) > 0
 
         # also check for extra_json with author data
         c.execute("SELECT COUNT(*) FROM paper_candidates WHERE extra_json IS NOT NULL AND extra_json != '{}'")
         has_extra_json = (c.fetchone()[0] or 0) > 0
 
-        if not has_authors_table and not has_extra_json:
+        if not has_authors_table and not has_extra_json and not has_authors_json:
             logger.warning("no author data available in database - leaders analysis requires "
                           "Garden database or API fetch to populate author information")
             conn.close()
             return [], {"method": "none", "threshold": 0, "reason": "no_author_data"}
+
+        logger.info(f"author data sources: authors_table={has_authors_table}, authors_json={has_authors_json}, extra_json={has_extra_json}")
 
         # first, get topical paper ids (recompute quickly)
         c.execute("""
@@ -434,10 +440,40 @@ class ReportGenerator:
 
         author_stats = defaultdict(lambda: {
             'papers': [], 'topical_papers': [], 'citations': 0,
-            'topical_citations': 0, 'years': []
+            'topical_citations': 0, 'years': [], 'id': None
         })
 
-        if has_extra_json:
+        if has_authors_json:
+            # use authors_json column (from enrich_authors script)
+            c.execute("""
+                SELECT id, authors_json, citation_count, year FROM paper_candidates
+                WHERE authors_json IS NOT NULL AND authors_json != '[]'
+            """)
+
+            for row in c.fetchall():
+                paper_id, authors_json, cites, year = row
+                if authors_json:
+                    try:
+                        authors = json.loads(authors_json)
+                        for author in authors[:5]:  # first 5 authors
+                            name = author.get('name', '')
+                            author_id = author.get('id', '')
+                            if name:
+                                author_stats[name]['papers'].append(paper_id)
+                                if author_id and not author_stats[name]['id']:
+                                    author_stats[name]['id'] = author_id
+                                if paper_id in topical_paper_ids:
+                                    author_stats[name]['topical_papers'].append(paper_id)
+                                    author_stats[name]['topical_citations'] += cites or 0
+                                author_stats[name]['citations'] += cites or 0
+                                if year:
+                                    author_stats[name]['years'].append(year)
+                    except (json.JSONDecodeError, TypeError, KeyError):
+                        pass
+
+            logger.info(f"extracted {len(author_stats)} unique authors from authors_json")
+
+        elif has_extra_json:
             # try to extract from extra_json
             c.execute("""
                 SELECT id, extra_json FROM paper_candidates
@@ -526,13 +562,41 @@ class ReportGenerator:
             ))
             significance_scores.append(significance)
 
-        # find natural breakpoint
+        # find natural breakpoint - for leaders, use gentler method
+        # (elbow often too aggressive, finding gaps between top 2-3 and rest)
         if significance_scores:
-            threshold, count = self.find_natural_breakpoint(significance_scores, method="elbow")
+            # try multiple methods
+            elbow_thresh, elbow_count = self.find_natural_breakpoint(significance_scores, method="elbow")
+            gap_thresh, gap_count = self.find_natural_breakpoint(significance_scores, method="gap")
+            std_thresh, std_count = self.find_natural_breakpoint(significance_scores, method="std")
+
+            # for leaders, prefer method that gives 10-30 authors (reasonable for attribution)
+            candidates = [
+                (elbow_thresh, elbow_count, "elbow"),
+                (gap_thresh, gap_count, "gap"),
+                (std_thresh, std_count, "std")
+            ]
+
+            # filter out methods that give fewer than 5 (too strict for leaders)
+            valid = [c for c in candidates if c[1] >= 5]
+
+            if valid:
+                # prefer method closest to 20 leaders
+                best = min(valid, key=lambda x: abs(x[1] - 20))
+            else:
+                # all too strict - use std (most permissive)
+                best = (std_thresh, std_count, "std")
+
+            threshold = best[0]
+            method_used = best[2]
+
+            logger.info(f"leader threshold: elbow={elbow_thresh:.1f}({elbow_count}), "
+                       f"gap={gap_thresh:.1f}({gap_count}), std={std_thresh:.1f}({std_count}) -> {method_used}")
+
             breakpoint_info = {
-                "method": "elbow",
+                "method": method_used,
                 "threshold": threshold,
-                "leaders_above": count,
+                "leaders_above": best[1],
                 "total_candidates": len(leaders)
             }
         else:
