@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+"""refnet-query - fast CLI for exploring citation databases."""
+import sys
+from pathlib import Path
+
+# add parent dir to path
+sys.path.insert(0, str(Path(__file__).parent))
+
+from refnet.cli.query import main
+sys.exit(main())
