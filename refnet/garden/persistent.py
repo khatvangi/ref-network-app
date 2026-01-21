@@ -493,8 +493,8 @@ class Garden:
                             papers.append((year, concepts_json or "[]"))
                         elif author_id in author_ids:
                             papers.append((year, concepts_json or "[]"))
-                    except:
-                        pass
+                    except (json.JSONDecodeError, TypeError, KeyError):
+                        pass  # skip malformed data
 
             if len(papers) < min_papers_per_author:
                 continue
@@ -514,8 +514,8 @@ class Garden:
                         score = concept.get('score', 1.0) if isinstance(concept, dict) else 1.0
                         if name:
                             year_concepts[year][name] += score
-                except:
-                    pass
+                except (json.JSONDecodeError, TypeError, AttributeError):
+                    pass  # skip malformed concept data
 
             if len(year_concepts) < 2:
                 continue
@@ -677,8 +677,8 @@ class Garden:
                             name = top.get('name', '') if isinstance(top, dict) else str(top)
                             if name:
                                 top_concepts.add(name)
-                    except:
-                        pass
+                    except (json.JSONDecodeError, TypeError, AttributeError, IndexError):
+                        pass  # skip malformed concept data
 
             # count distinct clusters (using top concepts as proxy)
             clusters_bridged = max(0, len(top_concepts) - 1)  # -1 because being in 1 cluster = 0 bridges

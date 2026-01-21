@@ -862,7 +862,7 @@ class ExpansionEngine:
                                 stats.papers_discovered += 1
                                 stats.edges_created += 1
             except Exception as e:
-                logger.warning(f"[bucket] refs failed for seed {seed.title[:30]}: {e}")
+                logger.warning(f"[bucket] refs failed for seed {(seed.title or '?')[:30]}: {e}")
                 stats.errors += 1
 
             # forward: get citations
@@ -894,7 +894,7 @@ class ExpansionEngine:
                                 stats.papers_discovered += 1
                                 stats.edges_created += 1
             except Exception as e:
-                logger.warning(f"[bucket] cites failed for seed {seed.title[:30]}: {e}")
+                logger.warning(f"[bucket] cites failed for seed {(seed.title or '?')[:30]}: {e}")
                 stats.errors += 1
 
         # create bucket
