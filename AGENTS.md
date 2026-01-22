@@ -596,3 +596,169 @@ python test_agents.py
 ```
 
 This tests all agents with real data (Charles W. Carter, aaRS researcher).
+
+---
+
+## Pipeline Orchestrator
+
+The `Pipeline` class coordinates all agents into a complete end-to-end analysis workflow.
+
+### Quick Start
+
+```python
+from refnet.providers import OpenAlexProvider
+from refnet.pipeline import Pipeline, QuickConfig, DeepConfig
+
+provider = OpenAlexProvider()
+pipeline = Pipeline(provider)
+
+# start from a paper
+result = pipeline.analyze_paper("10.1073/pnas.2116840119")
+
+# or start from an author
+result = pipeline.analyze_author("Charles W. Carter", affiliation_hint="UNC")
+
+# get summary
+print(result.summary())
+
+# access structured data
+for insight in result.insights:
+    print(insight)
+
+for item in result.reading_list[:10]:
+    print(f"[{item.category}] {item.paper.title}")
+```
+
+### Configuration
+
+Three preset configurations:
+
+| Config | Use Case | Papers/Author | Depth |
+|--------|----------|---------------|-------|
+| `QuickConfig` | Fast exploration | 30 | 1 hop |
+| `PipelineConfig` | Balanced (default) | 50 | 1 hop |
+| `DeepConfig` | Comprehensive | 100 | 2 hops |
+
+Custom configuration:
+
+```python
+from refnet.pipeline import PipelineConfig
+
+config = PipelineConfig(
+    max_references=50,
+    max_citations=50,
+    max_authors_to_follow=5,
+    analyze_gaps=True,
+    min_year=2015  # filter older papers
+)
+
+pipeline = Pipeline(provider, config=config)
+```
+
+### Pipeline Workflow
+
+```
+analyze_paper(doi)              analyze_author(name)
+      │                               │
+      ▼                               ▼
+┌─────────────┐               ┌───────────────┐
+│ SeedResolver│               │ AuthorResolver│
+└──────┬──────┘               └───────┬───────┘
+       │                              │
+       ▼                              ▼
+┌──────────────┐              ┌──────────────┐
+│CitationWalker│              │CorpusFetcher │
+└──────┬───────┘              └──────┬───────┘
+       │                              │
+       └──────────┬───────────────────┘
+                  │
+                  ▼
+       ┌──────────────────┐
+       │ Analyze Authors  │
+       │ (trajectory +    │
+       │  collaborations) │
+       └────────┬─────────┘
+                │
+                ▼
+       ┌──────────────────┐
+       │ Analyze Landscape│
+       │ (TopicExtractor) │
+       └────────┬─────────┘
+                │
+                ▼
+       ┌──────────────────┐
+       │ Detect Gaps      │
+       │ (GapDetector)    │
+       └────────┬─────────┘
+                │
+                ▼
+       ┌──────────────────┐
+       │ Build Reading    │
+       │ List (Scorer)    │
+       └────────┬─────────┘
+                │
+                ▼
+       ┌──────────────────┐
+       │ Generate Insights│
+       └────────┬─────────┘
+                │
+                ▼
+          LiteratureAnalysis
+```
+
+### Result Structure
+
+```python
+@dataclass
+class LiteratureAnalysis:
+    seed_query: str           # original query
+    seed_type: str            # "paper" or "author"
+    seed_paper: Paper         # if paper-based
+    seed_author: AuthorProfile # if author-based
+
+    all_papers: List[Paper]   # collected papers
+    paper_count: int          # total papers
+    key_authors: List[AuthorProfile]  # analyzed authors
+
+    landscape: FieldLandscape # topic analysis
+    gaps: ResearchGaps        # gap analysis
+    reading_list: List[ReadingListItem]  # ranked papers
+    insights: List[str]       # human-readable takeaways
+
+    duration_seconds: float   # execution time
+    api_calls: int           # API usage
+    errors: List[str]        # any errors
+```
+
+### Reading List Categories
+
+Papers in the reading list are categorized:
+
+| Category | Description | Priority |
+|----------|-------------|----------|
+| `seed` | The seed paper | 1 |
+| `highly_relevant` | High relevance score | 1 |
+| `key_author` | By key author, highly relevant | 1 |
+| `foundational` | High citation score | 2 |
+| `recent` | Published 2023+ | 2 |
+| `general` | Other relevant papers | 3 |
+
+### Example Output
+
+```
+Literature Analysis: Charles W. Carter
+  Papers: 150
+  Key authors: 3
+  Core topics: Aminoacyl tRNA synthetase, genetic codes, Transfer RNA
+  Reading list: 20 papers
+  Key insights: 7
+
+Insights:
+  1. Analyzed 150 papers from 3 key authors.
+  2. Core topics: Aminoacyl tRNA synthetase, genetic codes, Transfer RNA
+  3. Emerging topics: Aminoacyl tRNA synthetase, genetic codes, Transfer RNA
+  4. Publication years: 2018-2025
+  5. Key author: Charles W. Carter (318 papers, 11211 citations)
+  6. Research evolution: transfer rna
+  7. Reading list: 10 must-read papers, 20 total recommendations
+```
