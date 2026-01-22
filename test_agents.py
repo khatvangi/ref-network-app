@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-test agents - verify CorpusFetcher and TrajectoryAnalyzer work with real data.
+test agents - verify all agents work with real data.
 
 tests with Charles W. Carter Jr. (aaRS researcher from seed papers).
 """
@@ -8,8 +8,11 @@ tests with Charles W. Carter Jr. (aaRS researcher from seed papers).
 import sys
 sys.path.insert(0, '/storage/kiran-stuff/ref-network-app')
 
-from refnet.agents import CorpusFetcher, TrajectoryAnalyzer
-from refnet.agents.base import AgentStatus
+from refnet.agents import (
+    CorpusFetcher, TrajectoryAnalyzer,
+    CollaboratorMapper, TopicExtractor, GapDetector,
+    AgentStatus
+)
 from refnet.providers.openalex import OpenAlexProvider
 
 
@@ -163,9 +166,193 @@ def test_trajectory_analyzer(corpus):
         print("   FAILED: No data returned")
 
 
+def test_collaborator_mapper(corpus):
+    """test CollaboratorMapper with corpus from previous test."""
+    print("\n" + "=" * 60)
+    print("TEST: CollaboratorMapper")
+    print("=" * 60)
+
+    if not corpus:
+        print("   SKIPPED: No corpus data")
+        return
+
+    print(f"\n1. Mapping collaborations for {corpus.name} ({len(corpus.papers)} papers)")
+
+    mapper = CollaboratorMapper()
+    result = mapper.run(corpus=corpus)
+
+    print(f"\n2. Result:")
+    print(f"   Status: {result.status.value}")
+    print(f"   Duration: {result.duration_ms:.1f}ms")
+
+    if result.errors:
+        print(f"   Errors: {len(result.errors)}")
+        for e in result.errors[:3]:
+            print(f"     - [{e.code}] {e.message}")
+
+    if result.ok and result.data:
+        network = result.data
+        print(f"\n3. Network Stats:")
+        print(f"   Total collaborators: {network.total_collaborators}")
+        print(f"   Collaborative papers: {network.total_collaborative_papers}")
+        print(f"   Solo papers: {network.solo_papers}")
+        print(f"   Avg authors/paper: {network.avg_authors_per_paper:.1f}")
+        print(f"   Collaboration style: {network.collaboration_style}")
+
+        if network.top_collaborators:
+            print(f"\n4. Top Collaborators:")
+            for name in network.top_collaborators[:5]:
+                collab = next((c for c in network.collaborators if c.name == name), None)
+                if collab:
+                    print(f"   - {name}: {collab.paper_count} papers, {collab.collaboration_years} years")
+
+        if network.long_term_collaborators:
+            print(f"\n5. Long-term Collaborators (3+ years):")
+            for name in network.long_term_collaborators[:5]:
+                print(f"   - {name}")
+
+        if network.clusters:
+            print(f"\n6. Collaboration Clusters:")
+            for cluster in network.clusters[:3]:
+                print(f"   - {cluster.name}: {len(cluster.collaborator_names)} people")
+
+        if network.insights:
+            print(f"\n7. Insights:")
+            for insight in network.insights[:3]:
+                print(f"   - {insight}")
+    else:
+        print("   FAILED: No data returned")
+
+
+def test_topic_extractor(corpus):
+    """test TopicExtractor with corpus from previous test."""
+    print("\n" + "=" * 60)
+    print("TEST: TopicExtractor")
+    print("=" * 60)
+
+    if not corpus:
+        print("   SKIPPED: No corpus data")
+        return
+
+    print(f"\n1. Extracting topics from {len(corpus.papers)} papers")
+
+    extractor = TopicExtractor()
+    result = extractor.run(papers=corpus.papers)
+
+    print(f"\n2. Result:")
+    print(f"   Status: {result.status.value}")
+    print(f"   Duration: {result.duration_ms:.1f}ms")
+
+    if result.errors:
+        print(f"   Errors: {len(result.errors)}")
+        for e in result.errors[:3]:
+            print(f"     - [{e.code}] {e.message}")
+
+    if result.ok and result.data:
+        analysis = result.data
+        print(f"\n3. Topic Analysis:")
+        print(f"   Total topics: {len(analysis.topics)}")
+        print(f"   Core topics: {analysis.core_topics[:5]}")
+        print(f"   Emerging topics: {analysis.emerging_topics[:5]}")
+        print(f"   Declining topics: {analysis.declining_topics[:5]}")
+
+        if analysis.topics:
+            print(f"\n4. Top Topics by Weight:")
+            for topic in analysis.topics[:10]:
+                trend_indicator = {
+                    'emerging': '↑',
+                    'declining': '↓',
+                    'new': '★',
+                    'stable': '─'
+                }.get(topic.trend, '?')
+                print(f"   - {topic.name}: {topic.paper_count} papers, {topic.trend} {trend_indicator}")
+
+        if analysis.topic_clusters:
+            print(f"\n5. Topic Clusters:")
+            for cluster in analysis.topic_clusters[:5]:
+                topics = ', '.join(cluster.topics[:3])
+                print(f"   - {cluster.name}: {topics}")
+
+        if analysis.insights:
+            print(f"\n6. Insights:")
+            for insight in analysis.insights[:3]:
+                print(f"   - {insight}")
+    else:
+        print("   FAILED: No data returned")
+
+
+def test_gap_detector(corpus):
+    """test GapDetector with corpus from previous test."""
+    print("\n" + "=" * 60)
+    print("TEST: GapDetector")
+    print("=" * 60)
+
+    if not corpus:
+        print("   SKIPPED: No corpus data")
+        return
+
+    print(f"\n1. Detecting gaps in {len(corpus.papers)} papers")
+
+    detector = GapDetector()
+    result = detector.run(papers=corpus.papers)
+
+    print(f"\n2. Result:")
+    print(f"   Status: {result.status.value}")
+    print(f"   Duration: {result.duration_ms:.1f}ms")
+
+    if result.errors:
+        print(f"   Errors: {len(result.errors)}")
+        for e in result.errors[:3]:
+            print(f"     - [{e.code}] {e.message}")
+
+    if result.ok and result.data:
+        analysis = result.data
+        print(f"\n3. Gap Analysis:")
+        print(f"   Total concepts: {analysis.total_concepts}")
+        print(f"   Total authors: {analysis.total_authors}")
+        print(f"   Concept gaps: {len(analysis.concept_gaps)}")
+        print(f"   Method gaps: {len(analysis.method_gaps)}")
+        print(f"   Bridge papers: {len(analysis.bridge_papers)}")
+        print(f"   Unexplored areas: {len(analysis.unexplored_areas)}")
+
+        if analysis.concept_gaps:
+            print(f"\n4. Top Concept Gaps:")
+            for gap in analysis.concept_gaps[:5]:
+                print(f"   - {gap.concept_a} × {gap.concept_b}")
+                print(f"     ({gap.papers_with_a_only}+{gap.papers_with_both}) vs ({gap.papers_with_b_only}+{gap.papers_with_both}), gap={gap.gap_score:.2f}")
+
+        if analysis.method_gaps:
+            print(f"\n5. Method Gaps:")
+            for gap in analysis.method_gaps[:3]:
+                print(f"   - {gap.method} → {gap.domain}")
+                print(f"     {gap.method_papers} method papers, {gap.domain_papers} domain papers, {gap.combined_papers} combined")
+
+        if analysis.bridge_papers:
+            print(f"\n6. Bridge Papers:")
+            for bridge in analysis.bridge_papers[:3]:
+                print(f"   - [{bridge.year}] {bridge.title[:50]}...")
+                print(f"     Bridges: {', '.join(bridge.clusters_bridged[:2])}")
+
+        if analysis.unexplored_areas:
+            print(f"\n7. Unexplored Areas:")
+            for area in analysis.unexplored_areas[:3]:
+                print(f"   - {area.name}: {area.existing_papers} papers")
+                print(f"     {area.description[:60]}...")
+
+        if analysis.insights:
+            print(f"\n8. Insights:")
+            for insight in analysis.insights[:3]:
+                print(f"   - {insight}")
+    else:
+        print("   FAILED: No data returned")
+
+
 if __name__ == "__main__":
     corpus = test_corpus_fetcher()
     test_trajectory_analyzer(corpus)
+    test_collaborator_mapper(corpus)
+    test_topic_extractor(corpus)
+    test_gap_detector(corpus)
     print("\n" + "=" * 60)
-    print("TESTS COMPLETE")
+    print("ALL TESTS COMPLETE")
     print("=" * 60)
