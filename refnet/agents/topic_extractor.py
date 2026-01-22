@@ -248,11 +248,12 @@ class TopicExtractor(Agent):
         """extract topics from all sources (concepts, titles, abstracts)."""
         result.add_trace("extracting topics from papers")
 
-        # topic_name -> {papers: set, weight: float, years: list, sources: set}
+        # topic_name -> {papers: set, weight: float, paper_years: dict, sources: set}
+        # paper_years maps paper_id -> year to avoid counting same paper multiple times
         topics: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
             'papers': set(),
             'weight': 0.0,
-            'years': [],
+            'paper_years': {},  # paper_id -> year (deduplicates year counts)
             'sources': set(),
             'variants': set()
         })
@@ -273,7 +274,7 @@ class TopicExtractor(Agent):
                 data['papers'].add(paper.id)
                 data['weight'] += score * paper_weight
                 if paper.year:
-                    data['years'].append(paper.year)
+                    data['paper_years'][paper.id] = paper.year
                 data['sources'].add('concept')
                 data['variants'].add(name)
 
@@ -286,7 +287,7 @@ class TopicExtractor(Agent):
                     data['papers'].add(paper.id)
                     data['weight'] += 0.5 * paper_weight  # lower weight for title terms
                     if paper.year:
-                        data['years'].append(paper.year)
+                        data['paper_years'][paper.id] = paper.year
                     data['sources'].add('title')
                     data['variants'].add(term)
 
@@ -299,7 +300,7 @@ class TopicExtractor(Agent):
                     data['papers'].add(paper.id)
                     data['weight'] += 0.3 * paper_weight  # lower weight for abstract
                     if paper.year:
-                        data['years'].append(paper.year)
+                        data['paper_years'][paper.id] = paper.year
                     data['sources'].add('abstract')
                     data['variants'].add(term)
 
@@ -387,9 +388,10 @@ class TopicExtractor(Agent):
             variants = list(data['variants'])
             display_name = max(variants, key=len) if variants else canonical
 
-            # year distribution
+            # year distribution (from deduplicated paper_years)
             year_dist = defaultdict(int)
-            for year in data['years']:
+            years_list = list(data['paper_years'].values())
+            for year in years_list:
                 year_dist[year] += 1
 
             # top papers
@@ -401,8 +403,8 @@ class TopicExtractor(Agent):
                 paper_count=paper_count,
                 total_weight=data['weight'],
                 related_terms=variants[:5],
-                first_year=min(data['years']) if data['years'] else None,
-                last_year=max(data['years']) if data['years'] else None,
+                first_year=min(years_list) if years_list else None,
+                last_year=max(years_list) if years_list else None,
                 year_distribution=dict(year_dist),
                 top_paper_ids=paper_ids
             )
