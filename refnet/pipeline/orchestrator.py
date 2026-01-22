@@ -149,6 +149,10 @@ class Pipeline:
                 # papers are in the corpus, not trajectory directly
                 pass  # papers already added during corpus fetch
 
+        # deduplicate papers before analysis (prefer DOI, fallback to ID)
+        result.all_papers = self._deduplicate_papers(result.all_papers)
+        result.paper_count = len(result.all_papers)
+
         # step 4: analyze field landscape
         logger.info("step 4: analyzing field landscape")
         if config.analyze_topics:
@@ -165,10 +169,6 @@ class Pipeline:
             result.reading_list = self._build_reading_list(
                 result.all_papers, seed_paper, key_authors, config, result
             )
-
-        # deduplicate papers before finalizing
-        result.all_papers = list({p.id: p for p in result.all_papers}.values())
-        result.paper_count = len(result.all_papers)
 
         # step 7: generate insights
         logger.info("step 7: generating insights")
@@ -267,6 +267,10 @@ class Pipeline:
                             if p.id not in existing_ids:
                                 result.all_papers.append(p)
                                 existing_ids.add(p.id)
+
+        # deduplicate papers (preprint vs published versions)
+        result.all_papers = self._deduplicate_papers(result.all_papers)
+        result.paper_count = len(result.all_papers)
 
         # step 5: analyze field landscape
         logger.info("step 5: analyzing field landscape")
@@ -439,6 +443,51 @@ class Pipeline:
 
         return profile
 
+    def _deduplicate_papers(self, papers: List[Paper]) -> List[Paper]:
+        """
+        deduplicate papers preferring DOI, then title+year, then ID.
+
+        OpenAlex often has multiple records for the same paper (preprint
+        and published versions). This merges them, keeping the version
+        with more citations.
+        """
+        # first pass: group by DOI (most reliable)
+        doi_groups = {}
+        no_doi = []
+
+        for paper in papers:
+            if paper.doi:
+                key = paper.doi.lower().strip()
+                if key not in doi_groups:
+                    doi_groups[key] = []
+                doi_groups[key].append(paper)
+            else:
+                no_doi.append(paper)
+
+        # pick best from each DOI group (highest citations)
+        result = []
+        for doi, group in doi_groups.items():
+            best = max(group, key=lambda p: p.citation_count or 0)
+            result.append(best)
+
+        # second pass: dedupe no-DOI papers by title+year
+        title_groups = {}
+        for paper in no_doi:
+            if paper.title:
+                # normalize title for comparison
+                key = (paper.title.lower()[:50], paper.year or 0)
+                if key not in title_groups:
+                    title_groups[key] = []
+                title_groups[key].append(paper)
+            else:
+                result.append(paper)  # keep papers without title
+
+        for key, group in title_groups.items():
+            best = max(group, key=lambda p: p.citation_count or 0)
+            result.append(best)
+
+        return result
+
     def _analyze_landscape(
         self,
         papers: List[Paper],
@@ -539,14 +588,25 @@ class Pipeline:
         if not score_result.ok:
             return []
 
-        # build reading list
+        # build reading list (deduplicated)
         reading_list = []
+        seen_paper_ids = set()
         key_author_names = {a.name.lower() for a in key_authors}
 
-        for score in score_result.data[:config.top_papers_count]:
+        for score in score_result.data:
+            # skip already-added papers
+            if score.paper_id in seen_paper_ids:
+                continue
+
+            # stop when we have enough
+            if len(reading_list) >= config.top_papers_count:
+                break
+
             paper = next((p for p in papers if p.id == score.paper_id), None)
             if not paper:
                 continue
+
+            seen_paper_ids.add(paper.id)
 
             # determine category
             if seed_paper and paper.id == seed_paper.id:

@@ -762,3 +762,58 @@ Insights:
   6. Research evolution: transfer rna
   7. Reading list: 10 must-read papers, 20 total recommendations
 ```
+
+---
+
+## Command-Line Interface
+
+The pipeline can be run from the command line:
+
+```bash
+# run module
+python -m refnet.pipeline --help
+```
+
+### Paper Analysis
+
+```bash
+# analyze from DOI
+python -m refnet.pipeline paper 10.1073/pnas.2116840119
+
+# with config preset
+python -m refnet.pipeline paper 10.1073/pnas.2116840119 --config deep
+
+# output as JSON
+python -m refnet.pipeline paper 10.1073/pnas.2116840119 -o json
+
+# save to file
+python -m refnet.pipeline paper 10.1073/pnas.2116840119 -o markdown -f report.md
+
+# quiet mode (no logging)
+python -m refnet.pipeline paper 10.1073/pnas.2116840119 -q
+```
+
+### Author Analysis
+
+```bash
+# analyze from author name
+python -m refnet.pipeline author "Charles W. Carter"
+
+# with affiliation hint for disambiguation
+python -m refnet.pipeline author "Charles W. Carter" --affiliation UNC
+
+# with focus concepts
+python -m refnet.pipeline author "Jack Szostak" --focus RNA ribozymes
+```
+
+### Options
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--config` | `-c` | Config preset: quick, default, deep, author |
+| `--output` | `-o` | Output format: summary, json, markdown |
+| `--file` | `-f` | Write output to file |
+| `--focus` | | Focus concepts to highlight |
+| `--min-year` | | Filter papers before this year |
+| `--verbose` | `-v` | Verbose logging |
+| `--quiet` | `-q` | Quiet mode (minimal output) |
