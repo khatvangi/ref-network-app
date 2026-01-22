@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RefNet - Results</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #0f0f1a;
+            color: #e4e4e4;
+            line-height: 1.6;
+        }
+        .header {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            padding: 20px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        .header-content {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .logo {
+            font-size: 1.5rem;
+            font-weight: 300;
+            background: linear-gradient(90deg, #00d9ff, #00ff88);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            text-decoration: none;
+        }
+        .query-info {
+            text-align: right;
+        }
+        .query-info .query {
+            font-size: 1.1rem;
+            color: #fff;
+        }
+        .query-info .meta {
+            font-size: 0.85rem;
+            color: #888;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 30px 20px;
+        }
+
+        /* status states */
+        .status-pending, .status-running {
+            text-align: center;
+            padding: 100px 20px;
+        }
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 3px solid rgba(255,255,255,0.1);
+            border-top-color: #00d9ff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .status-failed {
+            text-align: center;
+            padding: 100px 20px;
+            color: #ff6464;
+        }
+
+        /* completed results */
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 12px;
+            padding: 20px;
+        }
+        .stat-card .value {
+            font-size: 2rem;
+            font-weight: 300;
+            color: #00d9ff;
+        }
+        .stat-card .label {
+            font-size: 0.9rem;
+            color: #888;
+        }
+
+        /* tabs */
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            padding-bottom: 10px;
+        }
+        .tab {
+            padding: 10px 20px;
+            background: transparent;
+            border: none;
+            color: #888;
+            cursor: pointer;
+            font-size: 1rem;
+            border-radius: 6px;
+            transition: all 0.2s;
+        }
+        .tab:hover {
+            color: #fff;
+            background: rgba(255,255,255,0.05);
+        }
+        .tab.active {
+            color: #00d9ff;
+            background: rgba(0,217,255,0.1);
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+
+        /* visualization iframe */
+        .viz-frame {
+            width: 100%;
+            height: 600px;
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 12px;
+            background: #fff;
+        }
+
+        /* insights */
+        .insights {
+            list-style: none;
+        }
+        .insights li {
+            padding: 12px 15px;
+            background: rgba(255,255,255,0.03);
+            border-radius: 8px;
+            margin-bottom: 10px;
+            border-left: 3px solid #00d9ff;
+        }
+
+        /* reading list */
+        .reading-list {
+            list-style: none;
+        }
+        .reading-item {
+            padding: 15px;
+            background: rgba(255,255,255,0.03);
+            border-radius: 8px;
+            margin-bottom: 10px;
+            display: flex;
+            gap: 15px;
+            align-items: flex-start;
+        }
+        .reading-item .priority {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 0.9rem;
+            flex-shrink: 0;
+        }
+        .priority-1 { background: #00ff88; color: #000; }
+        .priority-2 { background: #00d9ff; color: #000; }
+        .priority-3 { background: #555; color: #fff; }
+        .reading-item .details {
+            flex: 1;
+        }
+        .reading-item .title {
+            font-weight: 500;
+            margin-bottom: 5px;
+        }
+        .reading-item .title a {
+            color: #fff;
+            text-decoration: none;
+        }
+        .reading-item .title a:hover {
+            color: #00d9ff;
+        }
+        .reading-item .meta {
+            font-size: 0.85rem;
+            color: #888;
+        }
+        .reading-item .category {
+            font-size: 0.75rem;
+            padding: 2px 8px;
+            border-radius: 4px;
+            background: rgba(255,255,255,0.1);
+            margin-left: 10px;
+        }
+
+        /* authors */
+        .author-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+        }
+        .author-card {
+            background: rgba(255,255,255,0.03);
+            border-radius: 8px;
+            padding: 15px;
+        }
+        .author-card .name {
+            font-weight: 500;
+            margin-bottom: 5px;
+        }
+        .author-card .stats {
+            font-size: 0.85rem;
+            color: #888;
+        }
+
+        /* topics */
+        .topic-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .topic-tag {
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+        }
+        .topic-core {
+            background: rgba(0,217,255,0.2);
+            color: #00d9ff;
+        }
+        .topic-emerging {
+            background: rgba(0,255,136,0.2);
+            color: #00ff88;
+        }
+
+        /* gaps */
+        .gap-list {
+            list-style: none;
+        }
+        .gap-item {
+            padding: 15px;
+            background: rgba(255,255,255,0.03);
+            border-radius: 8px;
+            margin-bottom: 10px;
+            border-left: 3px solid #ff6464;
+        }
+        .gap-item .concepts {
+            font-weight: 500;
+        }
+        .gap-item .score {
+            font-size: 0.85rem;
+            color: #888;
+        }
+
+        .section {
+            margin-bottom: 40px;
+        }
+        .section h2 {
+            font-size: 1.2rem;
+            font-weight: 500;
+            margin-bottom: 15px;
+            color: #fff;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-content">
+            <a href="/" class="logo">RefNet</a>
+            <div class="query-info">
+                <div class="query">{{ job.query }}</div>
+                <div class="meta">{{ job.query_type }} · {{ job.config }}</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        {% if job.status == 'pending' or job.status == 'running' %}
+        <div class="status-{{ job.status }}">
+            <div class="spinner"></div>
+            <p>Analysis in progress...</p>
+            <p style="color: #888; font-size: 0.9rem; margin-top: 10px;">This page will refresh automatically</p>
+        </div>
+        <script>setTimeout(() => location.reload(), 3000);</script>
+
+        {% elif job.status == 'failed' %}
+        <div class="status-failed">
+            <h2>Analysis Failed</h2>
+            <p>{{ job.error }}</p>
+            <p style="margin-top: 20px;"><a href="/" style="color: #00d9ff;">← Try again</a></p>
+        </div>
+
+        {% elif job.status == 'completed' and summary %}
+        <!-- Summary stats -->
+        <div class="summary-grid">
+            <div class="stat-card">
+                <div class="value">{{ summary.paper_count }}</div>
+                <div class="label">Papers analyzed</div>
+            </div>
+            <div class="stat-card">
+                <div class="value">{{ summary.author_count }}</div>
+                <div class="label">Key authors</div>
+            </div>
+            <div class="stat-card">
+                <div class="value">{{ "%.1f"|format(summary.duration_seconds) }}s</div>
+                <div class="label">Analysis time</div>
+            </div>
+            {% if summary.landscape and summary.landscape.year_range %}
+            <div class="stat-card">
+                <div class="value">{{ summary.landscape.year_range[0] }}-{{ summary.landscape.year_range[1] }}</div>
+                <div class="label">Year range</div>
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Tabs -->
+        <div class="tabs">
+            <button class="tab active" data-tab="insights">Insights</button>
+            <button class="tab" data-tab="reading">Reading List</button>
+            <button class="tab" data-tab="authors">Authors</button>
+            <button class="tab" data-tab="topics">Topics</button>
+            {% if summary.gaps and summary.gaps.concept_gaps %}
+            <button class="tab" data-tab="gaps">Research Gaps</button>
+            {% endif %}
+            <button class="tab" data-tab="citations-viz">Citation Network</button>
+            <button class="tab" data-tab="authors-viz">Author Network</button>
+            <button class="tab" data-tab="topics-viz">Topic Network</button>
+        </div>
+
+        <!-- Insights -->
+        <div class="tab-content active" id="tab-insights">
+            {% if summary.seed_paper %}
+            <div class="section">
+                <h2>Seed Paper</h2>
+                <div class="stat-card">
+                    <div class="title" style="font-size: 1.1rem; margin-bottom: 10px;">{{ summary.seed_paper.title }}</div>
+                    <div class="meta" style="color: #888;">
+                        {{ summary.seed_paper.year or 'Unknown year' }}
+                        {% if summary.seed_paper.doi %}
+                        · <a href="https://doi.org/{{ summary.seed_paper.doi }}" target="_blank" style="color: #00d9ff;">DOI</a>
+                        {% endif %}
+                        {% if summary.seed_paper.citations %}
+                        · {{ summary.seed_paper.citations }} citations
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
+            <div class="section">
+                <h2>Key Insights</h2>
+                <ul class="insights">
+                    {% for insight in summary.insights %}
+                    <li>{{ insight }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+
+        <!-- Reading List -->
+        <div class="tab-content" id="tab-reading">
+            <div class="section">
+                <h2>Recommended Reading</h2>
+                <ul class="reading-list">
+                    {% for item in summary.reading_list %}
+                    <li class="reading-item">
+                        <div class="priority priority-{{ item.priority }}">{{ item.priority }}</div>
+                        <div class="details">
+                            <div class="title">
+                                {% if item.doi %}
+                                <a href="https://doi.org/{{ item.doi }}" target="_blank">{{ item.title }}</a>
+                                {% else %}
+                                {{ item.title }}
+                                {% endif %}
+                                <span class="category">{{ item.category }}</span>
+                            </div>
+                            <div class="meta">{{ item.year or 'Unknown year' }} · Score: {{ "%.2f"|format(item.score) }}</div>
+                        </div>
+                    </li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+
+        <!-- Authors -->
+        <div class="tab-content" id="tab-authors">
+            <div class="section">
+                <h2>Key Authors</h2>
+                <div class="author-list">
+                    {% for author in summary.key_authors %}
+                    <div class="author-card">
+                        <div class="name">{{ author.name }}</div>
+                        <div class="stats">{{ author.papers }} papers · {{ author.citations }} citations</div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Topics -->
+        <div class="tab-content" id="tab-topics">
+            {% if summary.landscape %}
+            <div class="section">
+                <h2>Core Topics</h2>
+                <div class="topic-list">
+                    {% for topic in summary.landscape.core_topics %}
+                    <span class="topic-tag topic-core">{{ topic }}</span>
+                    {% endfor %}
+                </div>
+            </div>
+            {% if summary.landscape.emerging_topics %}
+            <div class="section">
+                <h2>Emerging Topics</h2>
+                <div class="topic-list">
+                    {% for topic in summary.landscape.emerging_topics %}
+                    <span class="topic-tag topic-emerging">{{ topic }}</span>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+            {% endif %}
+        </div>
+
+        <!-- Gaps -->
+        {% if summary.gaps and summary.gaps.concept_gaps %}
+        <div class="tab-content" id="tab-gaps">
+            <div class="section">
+                <h2>Research Gaps</h2>
+                <p style="color: #888; margin-bottom: 15px;">Concept pairs that are rarely studied together</p>
+                <ul class="gap-list">
+                    {% for gap in summary.gaps.concept_gaps %}
+                    <li class="gap-item">
+                        <div class="concepts">"{{ gap.a }}" + "{{ gap.b }}"</div>
+                        <div class="score">Gap score: {{ "%.2f"|format(gap.score) }}</div>
+                    </li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Visualizations -->
+        <div class="tab-content" id="tab-citations-viz">
+            <iframe class="viz-frame" src="/viz/{{ job.id }}/citations"></iframe>
+        </div>
+        <div class="tab-content" id="tab-authors-viz">
+            <iframe class="viz-frame" src="/viz/{{ job.id }}/authors"></iframe>
+        </div>
+        <div class="tab-content" id="tab-topics-viz">
+            <iframe class="viz-frame" src="/viz/{{ job.id }}/topics"></iframe>
+        </div>
+
+        {% endif %}
+    </div>
+
+    <script>
+        // tab switching
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+
+                tab.classList.add('active');
+                document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+            });
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+# systemd service for refnet web app
+# copy to: /etc/systemd/system/refnet.service
+# then: sudo systemctl daemon-reload && sudo systemctl enable refnet && sudo systemctl start refnet
+
+[Unit]
+Description=RefNet Literature Analysis Web App
+After=network.target
+
+[Service]
+Type=simple
+User=kiran
+WorkingDirectory=/storage/kiran-stuff/ref-network-app
+ExecStart=/home/kiran/miniforge3/bin/uvicorn web.app:app --host 127.0.0.1 --port 8765
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

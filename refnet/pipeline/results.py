@@ -13,6 +13,16 @@ from ..agents.collaborator_mapper import CollaborationNetwork
 from ..agents.topic_extractor import TopicAnalysis, Topic
 from ..agents.gap_detector import GapAnalysis, ConceptPair, BridgePaper
 from ..agents.relevance_scorer import RelevanceScore
+from ..agents.field_resolver import FieldResolution
+
+# optional LLM extraction (may not be installed)
+try:
+    from ..llm.extractor import ExtractedInfo, PaperRelationship
+    HAS_LLM = True
+except ImportError:
+    HAS_LLM = False
+    ExtractedInfo = None
+    PaperRelationship = None
 
 
 @dataclass
@@ -141,6 +151,14 @@ class LiteratureAnalysis:
     api_calls: int = 0
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+
+    # verification and field resolution
+    resolved_field: Optional[FieldResolution] = None
+    verification_summary: Optional[Dict[str, Any]] = None
+
+    # LLM extraction results
+    extracted_info: List[Any] = field(default_factory=list)  # List[ExtractedInfo]
+    paper_relationships: List[Any] = field(default_factory=list)  # List[PaperRelationship]
 
     def add_insight(self, insight: str):
         """add a key insight."""

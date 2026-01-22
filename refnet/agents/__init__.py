@@ -9,3 +9,4 @@ from .seed_resolver import SeedResolver
 from .citation_walker import CitationWalker
 from .author_resolver import AuthorResolver
 from .relevance_scorer import RelevanceScorer
+from .field_resolver import FieldResolver, FieldProfile, FieldResolution

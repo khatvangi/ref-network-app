@@ -10,6 +10,14 @@ usage:
     print(result.summary())
     for paper in result.reading_list[:10]:
         print(f"  {paper.paper.title}")
+
+with verification and field awareness:
+    from refnet.pipeline import Pipeline, VerifiedConfig
+
+    config = VerifiedConfig()
+    pipeline = Pipeline(provider, config=config)
+    result = pipeline.analyze_paper("10.1038/s41586-020-2649-2")
+    # now includes verification reports and field-aware search
 """
 
 import logging
@@ -23,16 +31,33 @@ from ..providers.base import ORCIDProvider
 from ..agents import (
     SeedResolver, CitationWalker, AuthorResolver, CorpusFetcher,
     TrajectoryAnalyzer, CollaboratorMapper, TopicExtractor,
-    GapDetector, RelevanceScorer
+    GapDetector, RelevanceScorer, FieldResolver
 )
 from ..agents.relevance_scorer import ScoringContext
 from ..core.models import Paper
+
+# verification and checkpoints
+from ..verification import Verifier, VerificationReport
+from ..checkpoints import (
+    CheckpointHandler, ConsoleCheckpointHandler,
+    create_field_checkpoint, create_seed_checkpoint
+)
+from ..search import TieredSearchStrategy
 
 from .config import PipelineConfig
 from .results import (
     LiteratureAnalysis, AuthorProfile, ReadingListItem,
     FieldLandscape, ResearchGaps
 )
+
+# optional LLM extraction
+try:
+    from ..llm import OllamaProvider, PaperExtractor
+    HAS_LLM = True
+except ImportError:
+    HAS_LLM = False
+    OllamaProvider = None
+    PaperExtractor = None
 
 
 logger = logging.getLogger("refnet.pipeline")
@@ -59,11 +84,43 @@ class Pipeline:
         self,
         provider: OpenAlexProvider,
         orcid_provider: Optional[ORCIDProvider] = None,
-        config: Optional[PipelineConfig] = None
+        config: Optional[PipelineConfig] = None,
+        checkpoint_handler: Optional[CheckpointHandler] = None
     ):
         self.provider = provider
         self.orcid_provider = orcid_provider or ORCIDProvider()
         self.config = config or PipelineConfig()
+
+        # verification (optional)
+        self.verifier = Verifier() if self.config.enable_verification else None
+
+        # checkpoints (optional)
+        if self.config.enable_checkpoints:
+            self.checkpoint_handler = checkpoint_handler or ConsoleCheckpointHandler(
+                confidence_threshold=self.config.checkpoint_confidence_threshold
+            )
+        else:
+            self.checkpoint_handler = None
+
+        # field resolution (optional)
+        self.field_resolver = FieldResolver() if self.config.enable_field_resolution else None
+        self.resolved_field = None  # set during analysis
+
+        # tiered search (optional, initialized after field resolution)
+        self.tiered_search = None
+
+        # LLM extraction (optional)
+        self.llm_extractor = None
+        if self.config.enable_llm_extraction and HAS_LLM:
+            try:
+                llm_provider = OllamaProvider(model=self.config.llm_model)
+                if llm_provider.is_available():
+                    self.llm_extractor = PaperExtractor(llm_provider)
+                    logger.info(f"LLM extraction enabled with {self.config.llm_model}")
+                else:
+                    logger.warning(f"LLM model {self.config.llm_model} not available")
+            except Exception as e:
+                logger.warning(f"failed to initialize LLM extractor: {e}")
 
         # initialize agents
         self._init_agents()
@@ -119,6 +176,12 @@ class Pipeline:
         seed_result = self.seed_resolver.run(query=query)
         result.api_calls += seed_result.api_calls
 
+        # verify seed resolution
+        if self.verifier:
+            vr = self.verifier.verify_seed_resolver(query, seed_result)
+            if not vr.passed:
+                logger.warning(f"  seed resolver verification failed: {vr.errors}")
+
         if not seed_result.ok:
             result.add_error(f"could not resolve seed: {seed_result.errors}")
             return result
@@ -128,6 +191,48 @@ class Pipeline:
         result.all_papers.append(seed_paper)
 
         logger.info(f"  resolved: {seed_paper.title[:50]}...")
+
+        # step 1b: resolve field (if enabled)
+        if self.field_resolver:
+            logger.info("step 1b: resolving research field")
+            field_result = self.field_resolver.execute(seed_paper=seed_paper)
+
+            if field_result.ok:
+                self.resolved_field = field_result.data
+
+                # verify field resolution
+                if self.verifier:
+                    vr = self.verifier.verify_field_resolver(seed_paper, None, field_result)
+                    if not vr.passed:
+                        logger.warning(f"  field resolver verification failed: {vr.errors}")
+
+                logger.info(f"  identified field: {self.resolved_field.primary_field.name} "
+                           f"({self.resolved_field.confidence:.0%})")
+
+                # checkpoint for field confirmation
+                if self.checkpoint_handler:
+                    checkpoint = create_field_checkpoint(self.resolved_field)
+                    response = self.checkpoint_handler.present(checkpoint)
+
+                    if not response.confirmed and response.correction:
+                        # user provided different field
+                        new_field = self.field_resolver.get_profile(response.correction)
+                        if new_field:
+                            from ..agents.field_resolver import FieldResolution
+                            self.resolved_field = FieldResolution(
+                                primary_field=new_field,
+                                confidence=1.0,
+                                evidence=["user specified"]
+                            )
+                            logger.info(f"  user specified field: {new_field.name}")
+
+                # set up tiered search if enabled
+                if config.enable_tiered_search and self.resolved_field:
+                    self.tiered_search = TieredSearchStrategy(
+                        self.resolved_field.primary_field
+                    )
+
+                result.add_insight(f"Research field: {self.resolved_field.primary_field.name}")
 
         # step 2: walk citations
         logger.info("step 2: walking citations")
@@ -170,9 +275,34 @@ class Pipeline:
                 result.all_papers, seed_paper, key_authors, config, result
             )
 
+        # step 6b: LLM extraction (optional)
+        if self.llm_extractor and result.reading_list:
+            logger.info("step 6b: extracting paper info with LLM")
+            result.extracted_info, result.paper_relationships = self._llm_extract(
+                result.reading_list, seed_paper, config
+            )
+
         # step 7: generate insights
         logger.info("step 7: generating insights")
         self._generate_insights(result, config)
+
+        # finalize: add verification report and field resolution
+        if self.resolved_field:
+            result.resolved_field = self.resolved_field
+
+        if self.verifier:
+            report = self.verifier.finalize()
+            result.verification_summary = {
+                "passed": report.overall_passed,
+                "confidence": report.overall_confidence,
+                "errors": report.failed_errors,
+                "warnings": report.failed_warnings,
+                "agents_checked": len(report.agent_results),
+                "critical_issues": report.critical_issues
+            }
+            if report.suggestions:
+                for suggestion in report.suggestions:
+                    result.add_warning(suggestion)
 
         result.duration_seconds = time.time() - start_time
 
@@ -299,6 +429,15 @@ class Pipeline:
         # finalize paper count before insights
         result.paper_count = len(result.all_papers)
 
+        # step 7b: LLM extraction (optional)
+        if self.llm_extractor and result.reading_list:
+            logger.info("step 7b: extracting paper info with LLM")
+            # use seed author's top paper as context
+            context_paper = seed_papers[0] if seed_papers else None
+            result.extracted_info, result.paper_relationships = self._llm_extract(
+                result.reading_list, context_paper, config
+            )
+
         # step 8: generate insights
         logger.info("step 8: generating insights")
         self._generate_insights(result, config)
@@ -323,24 +462,66 @@ class Pipeline:
         cite_result = self.citation_walker.run(paper=seed_paper)
         result.api_calls += cite_result.api_calls
 
+        # verify citation walker
+        if self.verifier:
+            vr = self.verifier.verify_citation_walker(seed_paper, cite_result)
+            if not vr.passed:
+                logger.warning(f"  citation walker verification: {len(vr.errors)} errors")
+
         if cite_result.ok:
             citations = cite_result.data
 
-            # add references
-            for ref in citations.references:
-                all_papers.append(ref.paper)
-                for author in (ref.paper.authors or []):
+            ref_papers = [ref.paper for ref in citations.references]
+            cite_papers = [cite.paper for cite in citations.citations]
+
+            # apply tiered search prioritization if available
+            if self.tiered_search:
+                # determine strategy based on field resolution
+                strategy = "tiered"  # default
+                if self.resolved_field:
+                    strategy = self.resolved_field.suggested_strategy
+                    # map field strategies to search strategies
+                    if strategy == "ocean":
+                        pass  # keep as ocean
+                    elif strategy == "tier1_first":
+                        strategy = "tiered"  # prioritize but include all
+                    elif strategy in ("balanced", "broad"):
+                        strategy = "tiered"  # same as default
+
+                logger.info(f"  applying tiered search (strategy: {strategy})...")
+
+                # prioritize references
+                ref_result = self.tiered_search.prioritize_papers(
+                    ref_papers,
+                    limit=config.max_references,
+                    strategy=strategy
+                )
+                ref_papers = ref_result.papers
+                logger.info(f"    refs: {ref_result.search_summary}")
+
+                # prioritize citations
+                cite_result_tiered = self.tiered_search.prioritize_papers(
+                    cite_papers,
+                    limit=config.max_citations,
+                    strategy=strategy
+                )
+                cite_papers = cite_result_tiered.papers
+                logger.info(f"    cites: {cite_result_tiered.search_summary}")
+
+            # add to collection and count authors
+            for paper in ref_papers:
+                all_papers.append(paper)
+                for author in (paper.authors or []):
                     author_counts[author] += 1
 
-            # add citations
-            for cite in citations.citations:
-                all_papers.append(cite.paper)
-                for author in (cite.paper.authors or []):
+            for paper in cite_papers:
+                all_papers.append(paper)
+                for author in (paper.authors or []):
                     author_counts[author] += 1
 
-            # add seed paper authors
+            # add seed paper authors (boost)
             for author in (seed_paper.authors or []):
-                author_counts[author] += 5  # boost seed authors
+                author_counts[author] += 5
 
         # identify key authors (most frequent, excluding very common names)
         key_authors = [
@@ -701,3 +882,69 @@ class Pipeline:
                 f"Reading list: {len(must_read)} must-read papers, "
                 f"{len(result.reading_list)} total recommendations"
             )
+
+        # LLM extraction insights
+        if result.extracted_info:
+            successful = [e for e in result.extracted_info if e.extraction_confidence > 0.5]
+            result.add_insight(
+                f"LLM analysis: extracted info from {len(successful)} papers"
+            )
+
+    def _llm_extract(
+        self,
+        reading_list: List[ReadingListItem],
+        seed_paper: Optional[Paper],
+        config: PipelineConfig
+    ) -> tuple[list, list]:
+        """
+        extract structured information from top papers using LLM.
+
+        returns:
+            tuple of (extracted_info list, paper_relationships list)
+        """
+        extracted_info = []
+        paper_relationships = []
+
+        if not self.llm_extractor:
+            return extracted_info, paper_relationships
+
+        # get top papers for extraction (prioritize must-reads)
+        papers_to_extract = [
+            item.paper for item in reading_list
+            if item.priority <= 2  # must-read and should-read
+        ][:config.llm_max_papers]
+
+        if not papers_to_extract:
+            # fall back to top N from reading list
+            papers_to_extract = [
+                item.paper for item in reading_list[:config.llm_max_papers]
+            ]
+
+        logger.info(f"  extracting from {len(papers_to_extract)} papers...")
+
+        # batch extract paper info
+        extracted_info = self.llm_extractor.extract_batch(
+            papers_to_extract,
+            max_papers=config.llm_max_papers
+        )
+
+        successful = sum(1 for e in extracted_info if e.extraction_confidence > 0.5)
+        logger.info(f"  extracted: {successful}/{len(papers_to_extract)} successful")
+
+        # extract relationships to seed if available
+        if seed_paper and len(papers_to_extract) > 0:
+            logger.info("  extracting relationships to seed paper...")
+
+            # only extract relationships for top 5 papers to limit API calls
+            rel_papers = papers_to_extract[:5]
+            paper_relationships = self.llm_extractor.extract_relationships_batch(
+                rel_papers,
+                seed_paper,
+                max_papers=5
+            )
+
+            rel_types = [r.relationship_type for r in paper_relationships if r.relationship_type]
+            if rel_types:
+                logger.info(f"  relationships: {', '.join(set(rel_types))}")
+
+        return extracted_info, paper_relationships

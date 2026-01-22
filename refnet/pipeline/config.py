@@ -15,6 +15,7 @@ class PipelineConfig:
     - depth: how many hops from seed
     - width: how many items per hop
     - which analyses to run
+    - verification and checkpoints
     """
 
     # expansion limits
@@ -33,6 +34,18 @@ class PipelineConfig:
     analyze_topics: bool = True
     analyze_gaps: bool = True
     score_relevance: bool = True
+
+    # verification and quality control
+    enable_verification: bool = False       # verify agent outputs
+    enable_checkpoints: bool = False        # pause for user confirmation
+    checkpoint_confidence_threshold: float = 0.8  # auto-confirm above this
+    enable_tiered_search: bool = False      # prioritize high-impact journals
+    enable_field_resolution: bool = False   # identify research field
+
+    # LLM extraction
+    enable_llm_extraction: bool = False     # extract structured info from papers
+    llm_model: str = "qwen3:32b"            # ollama model to use
+    llm_max_papers: int = 10                # max papers to extract from
 
     # filtering
     min_citation_count: int = 0    # filter papers below this
@@ -79,3 +92,33 @@ class AuthorFocusConfig(PipelineConfig):
     max_papers_per_author: int = 200
     analyze_trajectories: bool = True
     analyze_collaborations: bool = True
+
+
+@dataclass
+class VerifiedConfig(PipelineConfig):
+    """verified exploration - with quality checks and field awareness."""
+    enable_verification: bool = True
+    enable_field_resolution: bool = True
+    enable_tiered_search: bool = True
+    enable_checkpoints: bool = False  # off by default, can be enabled
+
+
+@dataclass
+class InteractiveConfig(PipelineConfig):
+    """interactive exploration - with user checkpoints."""
+    enable_verification: bool = True
+    enable_field_resolution: bool = True
+    enable_tiered_search: bool = True
+    enable_checkpoints: bool = True
+    checkpoint_confidence_threshold: float = 0.7
+
+
+@dataclass
+class LLMEnhancedConfig(PipelineConfig):
+    """LLM-enhanced exploration - with structured extraction."""
+    enable_verification: bool = True
+    enable_field_resolution: bool = True
+    enable_tiered_search: bool = True
+    enable_llm_extraction: bool = True
+    llm_model: str = "qwen3:32b"
+    llm_max_papers: int = 10
